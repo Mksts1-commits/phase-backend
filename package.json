@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
+    "@types/nodemailer": "^6.4.15",
     "@types/pg": "^8.23.1",
     "typescript": "^5.5.4"
   },
@@ -20,6 +21,7 @@
     "@solana/web3.js": "^1.99.0",
     "bitcoinjs-lib": "^7.0.2",
     "ecpair": "^3.0.2",
+    "nodemailer": "^6.9.14",
     "pdf-lib": "^1.17.1",
     "pg": "^8.23.0",
     "sharp": "^0.35.4",

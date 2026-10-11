@@ -23,6 +23,7 @@ import { randomUUID, randomBytes, scryptSync, timingSafeEqual, createHash } from
 import { getPool } from "./db.js";
 import { checkRateLimit, clientIpFromHeaders } from "./rate-limit.js";
 import { auditLog } from "./sovereign-ledger-core.js";
+import { sendMail, passwordResetEmail } from "./mailer.js";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const SCRYPT_KEYLEN = 64;
@@ -646,8 +647,9 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
   });
 
   // --- POST /api/v1/auth/forgot-password ---
-  // Generates a password reset token. In production this would be emailed;
-  // for now the token is returned so the app can display it (dev mode).
+  // Generates a password reset token and emails it to the account holder.
+  // The token is stored as a SHA-256 hash, never returned in the response,
+  // and never logged. Email delivery requires SMTP_* env vars (see mailer.ts).
   route("POST", "/api/v1/auth/forgot-password", async (ctx) => {
     try {
       const ip = clientIp(ctx);
@@ -663,9 +665,12 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       const account = await s.findByEmail(email);
       // Always return success to avoid revealing whether the email exists.
       if (account && account.passwordHash) {
-        await s.createPasswordResetToken(account.id);
-        // The token is delivered out-of-band (email). It is never returned
-        // in the response and never logged.
+        const token = await s.createPasswordResetToken(account.id);
+        // Deliver the token by email. A send failure must not reveal
+        // account existence, so errors are logged server-side only.
+        sendMail(passwordResetEmail(email, token)).catch((err) => {
+          console.error("[auth] password-reset email failed:", err?.message ?? err);
+        });
         await auditLog(account.id, "password_reset_requested", "issuance_users", account.id, {});
         sendJson(ctx.res, 200, { ok: true, message: "If an account exists for this email, a reset token was generated." });
       } else {
