@@ -128,6 +128,23 @@ export async function addBonusSupply(createdBy: string, addSupply: number, reaso
   return getBonusPoolStatus();
 }
 
+/** Spend PHASE from the user's balance. Returns the new balance. */
+export async function spendPhase(userId: string, amount: number): Promise<number> {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new BonusHttpError(422, "invalid_amount", "amount must be a positive number.");
+  }
+  const units = Math.floor(amount);
+  if (units < 1) throw new BonusHttpError(422, "amount_too_small", "amount must be at least 1 PHASE.");
+  const row = await dbQueryOne<{ phase_balance: string }>(
+    `UPDATE issuance_users SET phase_balance = phase_balance - $1
+     WHERE id = $2 AND phase_balance >= $1
+     RETURNING phase_balance`,
+    [units, userId]
+  );
+  if (!row) throw new BonusHttpError(422, "insufficient_balance", "Not enough PHASE coins.");
+  return Number(row.phase_balance);
+}
+
 export function mountBonusRoutes(deps: BonusMountDeps): void {
   const { route, sendJson } = deps;
   const HttpError = deps.HttpError as unknown as typeof BonusHttpError;
@@ -166,6 +183,21 @@ export function mountBonusRoutes(deps: BonusMountDeps): void {
       const reason = typeof body.reason === "string" ? body.reason : undefined;
       const pool = await addBonusSupply(adminId, addSupply, reason);
       sendJson(ctx.res, 200, { ...ENVELOPE, pool });
+    } catch (err) { fail(ctx, err); }
+  });
+
+  // --- POST /api/v1/account/phase-spend ---
+  // Spend PHASE from the caller's balance (e.g. investing with PHASE).
+  // Body: { amount } — whole PHASE units.
+  route("POST", "/api/v1/account/phase-spend", async (ctx: any) => {
+    try {
+      const userId = await deps.resolveBearerUserId(ctx.req.headers);
+      if (!userId) throw new HttpError(401, "unauthorized", "Sign in required.");
+      const body = (ctx.body !== null && typeof ctx.body === "object" && !Array.isArray(ctx.body))
+        ? (ctx.body as Record<string, unknown>) : {};
+      const amount = typeof body.amount === "number" ? body.amount : NaN;
+      const phaseBalance = await spendPhase(userId, amount);
+      sendJson(ctx.res, 200, { ...ENVELOPE, phaseBalance });
     } catch (err) { fail(ctx, err); }
   });
 }
