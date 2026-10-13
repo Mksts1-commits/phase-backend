@@ -60,6 +60,7 @@ import { mountBtcRoutes } from "./btc-funding.js";
 import { mountStripeRoutes } from "./stripe-funding.js";
 import { mountIssuanceRoutes } from "./issuance.js";
 import { mountCoinEditRoutes } from "./coin-edit.js";
+import { mountBonusRoutes } from "./bonus.js";
 import { mountAuthRoutes, resolveBearerUserId } from "./auth.js";
 import { mountSovereignLedgerRoutes } from "./sovereign-ledger.js";
 import { mountMarketplaceRoutes } from "./marketplace.js";
@@ -1114,6 +1115,10 @@ mountIssuanceRoutes({ route, sendJson, HttpError });
 // Owner-only PATCH for social links/website/tagline plus per-coin
 // document upload/list/download/delete (Documentation & Compliance).
 mountCoinEditRoutes({ route, sendJson, HttpError });
+
+// --- 8e-v(j). Signup bonus pool (see bonus.ts) ---
+// Fixed pool, admin-adjustable: new users get 1000 PHASE while it lasts.
+mountBonusRoutes({ route, sendJson, HttpError, resolveBearerUserId });
 
 // --- 8e-v(a). Real account auth (see auth.ts) ---
 // Email+password accounts with server-side sessions, on top of the existing

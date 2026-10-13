@@ -24,6 +24,7 @@ import { getPool } from "./db.js";
 import { checkRateLimit, clientIpFromHeaders } from "./rate-limit.js";
 import { auditLog } from "./sovereign-ledger-core.js";
 import { sendMail, passwordResetEmail } from "./mailer.js";
+import { grantSignupBonus, getPhaseBalance } from "./bonus.js";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const SCRYPT_KEYLEN = 64;
@@ -543,6 +544,9 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       }
 
       const session = await s.createSession(account.id);
+      // Signup bonus: 1000 PHASE from the fixed bonus pool (idempotent per
+      // user; silently skipped when the pool is exhausted).
+      const bonusGranted = await grantSignupBonus(account.id).catch(() => false);
       // Generate email verification token. TODO: send via email; for now it
       // is only logged server-side and NEVER returned in the API response.
       const verificationToken = await s.createEmailVerificationToken(account.id);
@@ -552,6 +556,8 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
         token: session.token,
         expiresAt: session.expiresAt,
         emailVerified: false,
+        phaseBalance: await getPhaseBalance(account.id),
+        signupBonusGranted: bonusGranted,
       });
     } catch (err) { fail(ctx, err); }
   });
@@ -585,7 +591,7 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       await s.recordLoginAttempt(email, ip, true);
       const session = await s.createSession(account.id);
       await auditLog(account.id, "login_success", "issuance_users", account.id, {});
-      sendJson(ctx.res, 200, { ...accountPayload(account), token: session.token, expiresAt: session.expiresAt });
+      sendJson(ctx.res, 200, { ...accountPayload(account), token: session.token, expiresAt: session.expiresAt, phaseBalance: await getPhaseBalance(account.id) });
     } catch (err) { fail(ctx, err); }
   });
 
@@ -601,7 +607,7 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       if (!session) throw new HttpError(401, "invalid_session", "Session expired or invalid — please log in again.");
       const account = await s.findById(session.userId);
       if (!account) throw new HttpError(401, "invalid_session", "Account no longer exists.");
-      sendJson(ctx.res, 200, accountPayload(account));
+      sendJson(ctx.res, 200, { ...accountPayload(account), phaseBalance: await getPhaseBalance(account.id) });
     } catch (err) { fail(ctx, err); }
   });
 
