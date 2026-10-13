@@ -66,9 +66,12 @@ const MAX_DOCS_PER_COIN = 10;
 const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
 
 function cleanUrl(raw: string, maxLen: number): string | null {
-  const u = raw.trim().slice(0, maxLen);
+  let u = raw.trim().slice(0, maxLen);
   if (!u) return null;
-  if (!URL_RE.test(u)) throw new CoinEditHttpError(422, "invalid_url", `Not a valid http(s) URL: ${u.slice(0, 80)}`);
+  // Be forgiving: users often type "tiktok.com/@user" without a protocol.
+  // Default to https:// instead of rejecting the save.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) u = `https://${u}`;
+  if (!URL_RE.test(u)) throw new CoinEditHttpError(422, "invalid_url", `Not a valid URL: ${u.slice(0, 80)}`);
   return u;
 }
 
