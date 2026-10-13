@@ -1,19 +1,21 @@
 /**
- * Phase transactional mailer — SMTP via nodemailer.
+ * Phase transactional mailer — SendGrid HTTP API.
  *
  * Configuration (environment):
- *   SMTP_HOST   e.g. smtp.gmail.com
- *   SMTP_PORT   default 587 (STARTTLS); use 465 with SMTP_SECURE=true
- *   SMTP_SECURE "true" to use implicit TLS (port 465), otherwise STARTTLS
- *   SMTP_USER   SMTP username (for Gmail: the full address)
- *   SMTP_PASS   SMTP password (for Gmail: an App Password, not the login)
- *   SMTP_FROM   From header, defaults to SMTP_USER (e.g. "Phase <you@gmail.com>")
+ *   SENDGRID_API_KEY  SendGrid API key with "Mail Send" permission
+ *   SENDGRID_FROM     From header, e.g. "Phase <Mikyasts1@gmail.com>".
+ *                     The address must be verified as a Single Sender
+ *                     (or domain-authenticated) in the SendGrid dashboard.
  *
- * When SMTP_HOST/SMTP_USER/SMTP_PASS are not all set, sendMail() is a
- * graceful no-op (logs a warning, resolves false) so local dev and
- * deploys without mail config keep working.
+ * Why HTTP instead of SMTP: Render's free-tier egress cannot reach
+ * Gmail/Outlook SMTP hosts (connection timeouts on 587 and 465), and
+ * Hotmail accepted-then-silently-dropped mail. The SendGrid v3 API
+ * goes over HTTPS (port 443), which works fine.
+ *
+ * When SENDGRID_API_KEY is not set, sendMail() is a graceful no-op
+ * (logs a warning, resolves false) so local dev and deploys without
+ * mail config keep working.
  */
-import nodemailer from "nodemailer";
 
 export interface MailOptions {
   to: string;
@@ -22,51 +24,74 @@ export interface MailOptions {
   html?: string;
 }
 
+const SENDGRID_API = "https://api.sendgrid.com/v3/mail/send";
+
 function mailConfig() {
-  const host = (process.env.SMTP_HOST ?? "").trim();
-  const user = (process.env.SMTP_USER ?? "").trim();
-  const pass = process.env.SMTP_PASS ?? "";
-  if (!host || !user || !pass) return null;
-  const port = Number(process.env.SMTP_PORT ?? 587);
-  const secure = (process.env.SMTP_SECURE ?? "").toLowerCase() === "true";
-  const from = (process.env.SMTP_FROM ?? "").trim() || user;
-  return { host, port, secure, user, pass, from };
+  const apiKey = (process.env.SENDGRID_API_KEY ?? "").trim();
+  if (!apiKey) return null;
+  const from = (process.env.SENDGRID_FROM ?? "").trim() || "Phase <Mikyasts1@gmail.com>";
+  return { apiKey, from };
 }
 
 export function isMailConfigured(): boolean {
   return mailConfig() !== null;
 }
 
-let transporter: nodemailer.Transporter | null = null;
-
-function getTransporter(): nodemailer.Transporter | null {
-  const cfg = mailConfig();
-  if (!cfg) return null;
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: cfg.host,
-      port: cfg.port,
-      secure: cfg.secure,
-      auth: { user: cfg.user, pass: cfg.pass },
-    });
+/** Split "Name <addr@example.com>" into { name, email } for the API. */
+function parseFrom(from: string): { name?: string; email: string } {
+  const m = from.match(/^(.*)<([^<>]+)>$/);
+  if (m) {
+    const name = m[1].trim().replace(/^["']|["']$/g, "");
+    return { name: name || undefined, email: m[2].trim() };
   }
-  return transporter;
+  return { email: from.trim() };
 }
 
 /**
- * Send one transactional email. Resolves true when handed to SMTP,
- * false when mail is not configured. Rejects on SMTP errors — callers
- * that must not fail the request should catch.
+ * Send one transactional email. Resolves true when SendGrid accepts it
+ * (HTTP 202), false when mail is not configured. Rejects on API errors —
+ * callers that must not fail the request should catch. Never logs the
+ * API key.
  */
 export async function sendMail(opts: MailOptions): Promise<boolean> {
   const cfg = mailConfig();
-  const tx = getTransporter();
-  if (!cfg || !tx) {
-    console.warn("[mailer] SMTP not configured — email not sent", { to: opts.to, subject: opts.subject });
+  if (!cfg) {
+    console.warn("[mailer] SENDGRID_API_KEY not set — email not sent", { to: opts.to, subject: opts.subject });
     return false;
   }
-  await tx.sendMail({ from: cfg.from, to: opts.to, subject: opts.subject, text: opts.text, html: opts.html ?? opts.text });
-  return true;
+  const from = parseFrom(cfg.from);
+  const body = {
+    personalizations: [{ to: [{ email: opts.to }], subject: opts.subject }],
+    from,
+    content: [
+      { type: "text/plain", value: opts.text },
+      { type: "text/html", value: opts.html ?? opts.text },
+    ],
+  };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    const res = await fetch(SENDGRID_API, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (res.status === 202) return true;
+    let detail = "";
+    try {
+      const errJson = (await res.json()) as { errors?: Array<{ message?: string; field?: string }> };
+      detail = (errJson.errors ?? []).map((e) => e.message).filter(Boolean).join("; ");
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(`SendGrid rejected the send (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const PHASE_GREEN = "#00c853";

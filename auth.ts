@@ -649,7 +649,7 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
   // --- POST /api/v1/auth/forgot-password ---
   // Generates a password reset token and emails it to the account holder.
   // The token is stored as a SHA-256 hash, never returned in the response,
-  // and never logged. Email delivery requires SMTP_* env vars (see mailer.ts).
+  // and never logged. Email delivery requires SENDGRID_API_KEY (see mailer.ts).
   route("POST", "/api/v1/auth/forgot-password", async (ctx) => {
     try {
       const ip = clientIp(ctx);
