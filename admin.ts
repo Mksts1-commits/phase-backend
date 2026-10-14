@@ -109,9 +109,9 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
     } catch (err) { fail(ctx, err); }
   });
 
-  // --- DELETE /api/v1/admin/coins/:id — TEMPORARY: remove a test coin ---
+  // --- DELETE /api/v1/admin/coins/:id — remove a coin (admin) ---
   // Deletes the coin, its sovereign chain (cascades blocks/balances), draft,
-  // signature, and documents. Admin-only. Remove this endpoint after use.
+  // signature, and documents. Refuses coins with trading activity. Admin-only.
   route("DELETE", "/api/v1/admin/coins/:id", async (ctx: AdminCtx) => {
     try {
       rateLimitAdmin(ctx);
