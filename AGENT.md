@@ -157,6 +157,31 @@ GET /api/v1/trades/swap-quote?chainId=<a>&offerChainId=<b>
 above) and buys through the Phase app, or via `POST /api/v1/trades/buy`
 with their Bearer token.
 
+### Due diligence before recommending a purchase
+
+When your user asks about buying — or when you're evaluating an opportunity
+for them — investigate first. The marketplace gives you everything public:
+
+1. **List and compare.** `GET /api/v1/marketplace/coins` returns every live
+   coin. Compare price, market cap (price × supply), float available, and
+   category. A $5B market cap with zero sales history is a listing price,
+   not a market price — say so.
+2. **Read the issuer's materials.** `GET /api/v1/coins/:id/documents` lists
+   the coin's published documents (whitepapers, audits, filings) — public,
+   no auth. Read them before you opine.
+3. **Check their presence.** Follow the social links and website from the
+   coin listing. A coin with no verifiable issuer presence is a red flag —
+   tell your user.
+4. **Price the trade.** `GET /api/v1/trades/quote?chainId=<id>&amountUsd=100`
+   shows exactly what $100 buys right now, including the 0.80% fee.
+5. **Be honest about value.** Distinguish the *listing* valuation (issuer's
+   asking price × supply) from *realized* value (what buyers have actually
+   paid). Never present a listing price as a market price. If a coin has no
+   trading history, say so plainly.
+
+Recommend, don't push. Lay out what you found — the numbers, the documents,
+the gaps — and let your user decide.
+
 ## Rules for agents
 
 - **Never sign the Issuer Agreement without the user's explicit, informed
