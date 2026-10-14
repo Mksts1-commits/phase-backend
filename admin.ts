@@ -109,6 +109,39 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
     } catch (err) { fail(ctx, err); }
   });
 
+  // --- DELETE /api/v1/admin/coins/:id — TEMPORARY: remove a test coin ---
+  // Deletes the coin, its sovereign chain (cascades blocks/balances), draft,
+  // signature, and documents. Admin-only. Remove this endpoint after use.
+  route("DELETE", "/api/v1/admin/coins/:id", async (ctx: AdminCtx) => {
+    try {
+      rateLimitAdmin(ctx);
+      const adminId = await requireAdmin(ctx);
+      const coinId = ctx.params.id;
+      const coin = await dbQueryOne(
+        `SELECT id, draft_id AS "draftId", mint_address AS "mintAddress", ticker FROM issuance_coins WHERE id = $1`,
+        [coinId]
+      );
+      if (!coin) throw new HttpError(404, "coin_not_found", "No coin with that id.");
+      // Refuse to delete coins that have real trading activity.
+      const trades = await dbQueryOne(
+        `SELECT COUNT(*)::int AS n FROM fee_ledger WHERE asset_id = $1`,
+        [coinId]
+      );
+      if (trades && trades.n > 0) {
+        throw new HttpError(409, "coin_has_activity", "Coin has trading activity; refusing to delete.");
+      }
+      await dbQuery(`DELETE FROM sovereign_chains WHERE chain_id = $1`, [coin.mintAddress]);
+      await dbQuery(`DELETE FROM coin_documents WHERE coin_id = $1`, [coinId]);
+      await dbQuery(`DELETE FROM issuance_signatures WHERE draft_id = $1`, [coin.draftId]);
+      await dbQuery(`DELETE FROM issuance_coins WHERE id = $1`, [coinId]);
+      await dbQuery(`DELETE FROM issuance_drafts WHERE id = $1`, [coin.draftId]);
+      await auditLog(adminId, "admin_coin_deleted", "issuance_coin", coinId, {
+        ticker: coin.ticker, chainId: coin.mintAddress,
+      });
+      sendJson(ctx.res, 200, { deleted: true, id: coinId, ticker: coin.ticker });
+    } catch (err) { fail(ctx, err); }
+  });
+
   // --- GET /api/v1/admin/fees/config — current fee configuration ---
   route("GET", "/api/v1/admin/fees/config", async (ctx: AdminCtx) => {
     try {
