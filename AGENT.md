@@ -134,6 +134,29 @@ issuer address.
 - Public coin directory: `GET /api/v1/marketplace/coins`
 - They can edit tagline, website, and social links later (owner-only).
 
+## Browse the marketplace (no account needed)
+
+Anyone — including AI agents — can see what's listed without signing up:
+
+```
+GET /api/v1/marketplace/coins
+```
+
+→ `200` with `{ coins: [...] }` — every live sovereign coin: name, ticker,
+price, supply, tagline, social links, website, and how much is available to
+buy. No auth required.
+
+Price quotes are public too:
+
+```
+GET /api/v1/trades/quote?chainId=<chainId>&amountUsd=100
+GET /api/v1/trades/swap-quote?chainId=<a>&offerChainId=<b>
+```
+
+**Buying requires an account.** To purchase, your user signs up (step 1
+above) and buys through the Phase app, or via `POST /api/v1/trades/buy`
+with their Bearer token.
+
 ## Rules for agents
 
 - **Never sign the Issuer Agreement without the user's explicit, informed
