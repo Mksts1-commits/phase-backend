@@ -555,6 +555,10 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+// Maximum fully-diluted market cap at issuance (price × total supply, USD).
+// Set by Mike on 2026-10-14; lift by changing this constant and redeploying.
+const MAX_ISSUANCE_MARKET_CAP_USD = 500_000_000;
+
 function validateTicker(raw: string): string {
   const t = raw.trim().toUpperCase();
   if (!/^[A-Z0-9]{2,10}$/.test(t)) {
@@ -825,6 +829,12 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
       const totalShares = totalSharesRaw === undefined ? 100000 : Number(totalSharesRaw);
       if (!Number.isInteger(totalShares) || totalShares < 1000) {
         throw new HttpError(422, "invalid_total_shares", "totalShares must be a whole number >= 1000.");
+      }
+      // Market-cap gate: price × supply may not exceed $500M at issuance.
+      const marketCapUsd = draft.priceUsd * totalShares;
+      if (marketCapUsd > MAX_ISSUANCE_MARKET_CAP_USD) {
+        throw new HttpError(422, "market_cap_exceeded",
+          `Market cap at issuance ($${marketCapUsd.toLocaleString("en-US", { maximumFractionDigits: 2 })}) exceeds the $500M limit. Lower the price or the supply.`);
       }
       const chain = await createChain({
         coin_name: draft.name,

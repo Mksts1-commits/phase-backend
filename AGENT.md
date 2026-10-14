@@ -120,6 +120,10 @@ Content-Type: application/json
 `totalShares` must be a whole number ≥ 1000. Send an `Idempotency-Key`
 header — minting is irreversible and the key makes retries safe.
 
+**Market-cap limit:** price × totalShares may not exceed **$500M USD** at
+issuance. Exceeding it returns `422 market_cap_exceeded` — lower the price
+or the supply.
+
 → `201` with `{ coin, chainId, genesisHash }`. Your user now owns a live
 sovereign chain. The retained stake (per the equity split) sits at their
 issuer address.
