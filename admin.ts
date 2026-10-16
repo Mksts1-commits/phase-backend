@@ -112,6 +112,53 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
   // --- DELETE /api/v1/admin/coins/:id — remove a coin (admin) ---
   // Deletes the coin, its sovereign chain (cascades blocks/balances), draft,
   // signature, and documents. Refuses coins with trading activity. Admin-only.
+
+  // --- PATCH /api/v1/admin/coins/:id — admin override for coin metadata ---
+  // Updates tagline, websiteUrl, socialProfiles. For support interventions.
+  route("PATCH", "/api/v1/admin/coins/:id", async (ctx: AdminCtx) => {
+    try {
+      rateLimitAdmin(ctx);
+      const adminId = await requireAdmin(ctx);
+      const coinId = ctx.params.id;
+      const body = asRecord(ctx.body);
+      const coin = await dbQueryOne(
+        `SELECT id, draft_id AS "draftId" FROM issuance_coins WHERE id = $1`,
+        [coinId]
+      );
+      if (!coin) throw new HttpError(404, "coin_not_found", "No coin with that id.");
+      const out: Record<string, unknown> = {};
+      if (coin.draftId && ("socialProfiles" in body || "tagline" in body)) {
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        if ("socialProfiles" in body) {
+          const raw = body.socialProfiles;
+          if (!Array.isArray(raw)) throw new HttpError(422, "invalid_social", "socialProfiles must be an array.");
+          params.push(JSON.stringify(raw));
+          sets.push(`social_profiles = $${params.length}`);
+          out.socialProfiles = raw;
+        }
+        if ("tagline" in body) {
+          params.push(String(body.tagline || "").slice(0, 140) || null);
+          sets.push(`tagline = $${params.length}`);
+          out.tagline = body.tagline;
+        }
+        if (sets.length > 0) {
+          params.push(coin.draftId);
+          await dbQuery(
+            `UPDATE issuance_drafts SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${params.length}`,
+            params
+          );
+        }
+      }
+      if ("websiteUrl" in body) {
+        const w = body.websiteUrl == null || String(body.websiteUrl).trim() === "" ? null : String(body.websiteUrl).trim();
+        await dbQuery(`UPDATE issuance_coins SET website_url = $1 WHERE id = $2`, [w, coinId]);
+        out.websiteUrl = w;
+      }
+      await auditLog(adminId, "admin_coin_updated", "issuance_coin", coinId, out);
+      sendJson(ctx.res, 200, { updated: true, id: coinId, ...out });
+    } catch (err) { fail(ctx, err); }
+  });
   route("DELETE", "/api/v1/admin/coins/:id", async (ctx: AdminCtx) => {
     try {
       rateLimitAdmin(ctx);

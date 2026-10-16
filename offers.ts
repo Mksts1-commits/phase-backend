@@ -388,9 +388,9 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
       if (target.userId === buyerUserId) {
         throw new HttpError(422, "self_trade", "You can't make an offer on your own coin.");
       }
-      if (offerCoin.userId !== buyerUserId) {
-        throw new HttpError(422, "offer_not_yours", "You can only offer coins you issued.");
-      }
+      // The buyer must actually hold the offered units. They may be the
+      // issuer OR they may hold coins received via a prior swap/purchase.
+      // Balance is verified below across the buyer's known addresses.
       for (const [c, label] of [[target, "target"], [offerCoin, "offer"]] as const) {
         const p = Number(c.priceUsd);
         if (!Number.isFinite(p) || p <= 0) {
@@ -398,28 +398,58 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
         }
       }
       // The buyer must actually hold the offered units at creation time.
-      // The issuer's retained stake lives at the coin's recorded issuerAddress
-      // (credited at genesis); a device wallet can change across installs, so
-      // fall back to the recorded address when the client-supplied address
-      // doesn't hold the offered units. Only the coin's issuer can reach this
-      // point (offer_not_yours is enforced above), so this is safe.
+      // Check the client-supplied address, the buyer's recorded addresses,
+      // and the offered coin's issuer address (for issuers whose stake lives
+      // at the genesis-credited address). Swapped/received coins live at the
+      // recipient's issuer address, so all known addresses are scanned.
       let effectiveBuyerAddress = buyerAddress;
-      let offerBal: bigint;
+      let offerBal = 0n;
+      const candidateAddrs: string[] = [];
+      if (isValidAddress(buyerAddress)) candidateAddrs.push(buyerAddress);
       try {
-        offerBal = BigInt(getChainBalance(offerChainId, buyerAddress));
+        const ms0 = await getStoreAsync();
+        const bu = await ms0.getUserById(buyerUserId);
+        const recAddrs = Array.isArray((bu as any)?.sovereignAddresses) ? (bu as any).sovereignAddresses : [];
+        for (const a of recAddrs) if (isValidAddress(a) && !candidateAddrs.includes(a)) candidateAddrs.push(a);
+        if (isValidAddress((bu as any)?.sovereignAddress) && !candidateAddrs.includes((bu as any).sovereignAddress)) {
+          candidateAddrs.push((bu as any).sovereignAddress);
+        }
+      } catch { /* use what we have */ }
+      if (isValidAddress(offerCoin.issuerAddress) && !candidateAddrs.includes(offerCoin.issuerAddress)) {
+        candidateAddrs.push(offerCoin.issuerAddress);
+      }
+      // Also scan the buyer's own issued coins' issuer addresses (swap
+      // receipts land at the recipient's issuer address on record).
+      try {
+        const issuance0 = await getIssuanceStore();
+        const buyerCoins = await issuance0.listCoinsByUser(buyerUserId).catch(() => []);
+        for (const bc of buyerCoins || []) {
+          const ia = (bc as any).issuerAddress;
+          if (isValidAddress(ia) && !candidateAddrs.includes(ia)) candidateAddrs.push(ia);
+        }
+      } catch { /* use what we have */ }
+      try {
+        // Verify the chain exists first.
+        getChainBalance(offerChainId, candidateAddrs[0]);
       } catch {
         throw new HttpError(404, "offer_coin_not_found", "The offer chain is unknown on this node.");
       }
-      if (offerBal < offerUnits && isValidAddress(offerCoin.issuerAddress) && offerCoin.issuerAddress !== buyerAddress) {
-        let issuerBal = 0n;
-        try { issuerBal = BigInt(getChainBalance(offerChainId, offerCoin.issuerAddress)); } catch { issuerBal = 0n; }
-        if (issuerBal >= offerUnits) {
-          effectiveBuyerAddress = offerCoin.issuerAddress;
-          offerBal = issuerBal;
+      for (const addr of candidateAddrs) {
+        let bal = 0n;
+        try { bal = BigInt(getChainBalance(offerChainId, addr)); } catch { bal = 0n; }
+        if (bal >= offerUnits) {
+          effectiveBuyerAddress = addr;
+          offerBal = bal;
+          break;
+        }
+        if (bal > offerBal) {
+          // Keep track of the best partial balance for the error message,
+          // but only an address covering the full amount can be used.
+          offerBal = bal;
         }
       }
       if (offerBal < offerUnits) {
-        throw new HttpError(409, "insufficient_offer_balance", "You don't hold enough of your offered coin for this proposal.");
+        throw new HttpError(409, "insufficient_offer_balance", "You don't hold enough of the offered coin for this proposal.");
       }
 
       const store = await getStoreAsync();
