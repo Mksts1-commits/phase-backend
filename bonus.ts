@@ -186,6 +186,15 @@ export function mountBonusRoutes(deps: BonusMountDeps): void {
     } catch (err) { fail(ctx, err); }
   });
 
+  // --- GET /api/v1/bonus-pool (public) ---
+  // Public pool status for the landing page "X of 10,000 claimed" counter.
+  // No auth required — reveals only aggregate counts, no user data.
+  route("GET", "/api/v1/bonus-pool", async (ctx: any) => {
+    try {
+      sendJson(ctx.res, 200, { ...ENVELOPE, pool: await getBonusPoolStatus() });
+    } catch (err) { fail(ctx, err); }
+  });
+
   // --- POST /api/v1/account/phase-spend ---
   // Spend PHASE from the caller's balance (e.g. investing with PHASE).
   // Body: { amount } — whole PHASE units.
