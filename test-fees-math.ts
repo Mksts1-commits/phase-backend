@@ -15,6 +15,8 @@ import {
   fromMicroUnits,
   calculateFee,
   calculateFeeOnDecimal,
+  calculateTradeFee,
+  FEE_MIN_WHOLE_UNITS,
   feeIdempotencyKey,
   FEE_BPS_DENOMINATOR,
   assetDecimals,
@@ -183,6 +185,34 @@ console.log("fee math — markFeeSettled idempotency signal");
   });
   eq("first settle transitions", await markFeeSettled(mock(1), "k", "tx1"), true);
   eq("retry on settled fee does not transition", await markFeeSettled(mock(0), "k", "tx1"), false);
+}
+
+console.log("fee math — 1-coin minimum floor (calculateTradeFee)");
+{
+  eq("floor constant is 1 whole coin", FEE_MIN_WHOLE_UNITS, 1n);
+  // Dust cases: 80bps rounds to 0 -> floor binds, fee = 1.
+  eq("1 unit -> fee 1 (floor)", calculateTradeFee(1n, 80), 1n);
+  eq("2 units -> fee 1 (floor)", calculateTradeFee(2n, 80), 1n);
+  eq("124 units -> fee 1 (floor, bps gives 0)", calculateTradeFee(124n, 80), 1n);
+  // At 125 units the bps cut reaches exactly 1 -> floor no longer binds.
+  eq("125 units -> fee 1 (bps)", calculateTradeFee(125n, 80), 1n);
+  eq("1000 units -> fee 8 (bps)", calculateTradeFee(1000n, 80), 8n);
+  eq("100000 units -> fee 800 (bps)", calculateTradeFee(100000n, 80), 800n);
+  // Conservation still holds: fee + net = gross.
+  for (const u of [1n, 2n, 124n, 125n, 1000n]) {
+    const f = calculateTradeFee(u, 80);
+    ok(`conservation at ${u} units`, f + (u - f) === u);
+  }
+  // A 1-unit trade nets 0 under the floor -> settlement must reject it.
+  eq("1-unit trade nets 0 (too small to settle)", 1n - calculateTradeFee(1n, 80), 0n);
+  eq("2-unit trade nets 1 (settleable)", 2n - calculateTradeFee(2n, 80), 1n);
+  // Invalid inputs throw.
+  let threw = false;
+  try { calculateTradeFee(10n, -1); } catch { threw = true; }
+  ok("negative bps throws", threw);
+  threw = false;
+  try { calculateTradeFee(-5n, 80); } catch { threw = true; }
+  ok("negative units throws", threw);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -50,6 +50,7 @@ import {
   getTreasurySovereignAddress,
   requireTreasurySovereignAddress,
   FEE_DISCLOSURE,
+  calculateTradeFee,
 } from "./fee.js";
 
 // ---------------------------------------------------------------------------
@@ -858,15 +859,16 @@ export function quoteSwapTargetUnits(offerUnits: bigint, offerPriceMicro: bigint
 
 /**
  * Minimal gross target units G such that the buyer nets at least `netWanted`
- * after the fee: net(G) = G - floor(G * feeBps / 10000). Any dust (< 1 coin)
- * goes to the buyer.
+ * after the fee: net(G) = G - max(floor(G * feeBps / 10000), 1). The 1-coin
+ * fee floor means G >= netWanted + 1 always. Any dust (< 1 coin) goes to
+ * the buyer.
  */
 export function grossUnitsForNet(netWanted: bigint, feeBps: number): bigint {
   if (netWanted < 1n) {
     throw new MarketplaceHttpError(422, "amount_too_small", "Request must be at least one whole coin.");
   }
   let gross = netWanted + (netWanted * BigInt(feeBps)) / BigInt(10000 - feeBps) + 1n;
-  const net = (g: bigint) => g - (g * BigInt(feeBps)) / 10000n;
+  const net = (g: bigint) => g - calculateTradeFee(g, feeBps);
   while (net(gross) < netWanted) gross += 1n;
   while (gross > 1n && net(gross - 1n) >= netWanted) gross -= 1n;
   return gross;
@@ -930,12 +932,18 @@ export async function executeSwapSettlement(input: SwapSettlementInput): Promise
   const offerUnitsBase = offerUnits.toString();
 
   // 80-bps Phase fee (server-authoritative) on swaps: assessed in the
-  // TARGET coin — fee = floor(targetUnits * bps / 10000) whole coins,
+  // TARGET coin — fee = max(floor(targetUnits * bps / 10000), 1) whole coins,
   // deducted from the coins the buyer receives and sent on-chain to the
   // Phase treasury address. Fail closed when no treasury is configured.
   const freshSwapFeeCfg = await getFeeConfig();
   const treasurySovereignAddr = requireTreasurySovereignAddress();
-  const swapFeeUnitsBig = (targetUnits * BigInt(freshSwapFeeCfg.feeBps)) / 10000n;
+  const swapFeeUnitsBig = calculateTradeFee(targetUnits, freshSwapFeeCfg.feeBps);
+
+  // The 1-coin minimum fee must leave the buyer at least 1 coin.
+  if (targetUnits - swapFeeUnitsBig < 1n) {
+    throw new MarketplaceHttpError(422, "amount_too_small",
+      "Offer too small — the 1-coin minimum Phase fee would leave nothing to receive.");
+  }
 
   // Pre-check the buyer's offer balance before writing anything.
   // The issuer's retained stake lives at the coin's recorded issuerAddress
@@ -1022,8 +1030,12 @@ export async function executeSwapSettlement(input: SwapSettlementInput): Promise
   const swapGrossUnits = decimalToCoinUnits(attempt.units);
   const swapFeeUnits = attempt.feeUnits !== null && attempt.feeUnits !== undefined
     ? decimalToCoinUnits(attempt.feeUnits)
-    : (swapGrossUnits * BigInt(swapFeeBps)) / 10000n;
+    : calculateTradeFee(swapGrossUnits, swapFeeBps);
   const swapNetUnits = swapGrossUnits - swapFeeUnits;
+  if (swapNetUnits < 1n) {
+    throw new MarketplaceHttpError(422, "amount_too_small",
+      "Offer too small — the 1-coin minimum Phase fee would leave nothing to receive.");
+  }
   const swapFeeKey = feeIdempotencyKey("swap", key);
 
   // Offer leg: buyer -> target issuer on the OFFER chain. Skipped when
@@ -1242,7 +1254,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
       // 80-bps Phase fee (server-authoritative): assessed on the gross
       // PURCHASED-ASSET UNITS, deducted from the coins the BUYER receives
       // and sent on-chain to the Phase treasury sovereign address.
-      // Integer-exact: fee = floor(units * bps / 10000); net = units - fee.
+      // Integer-exact: fee = max(floor(units * bps / 10000), 1); net = units - fee.
       // The buyer pays exactly the quoted gross USD; the seller receives
       // the full gross proceeds (no fee is deducted from seller proceeds).
       const freshFeeCfg = await getFeeConfig();
@@ -1252,6 +1264,13 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
       if (floatBal < units) {
         throw new HttpError(409, "insufficient_float",
           "The public float doesn't have enough coins left for this purchase.");
+      }
+
+      // The 1-coin minimum fee must leave the buyer at least 1 coin —
+      // otherwise the purchase is too small to settle.
+      if (units - calculateTradeFee(units, freshFeeCfg.feeBps) < 1n) {
+        throw new HttpError(422, "amount_too_small",
+          "Purchase too small — the 1-coin minimum Phase fee would leave nothing to receive.");
       }
 
       // Idempotent attempt: same key -> resume or replay, never double-settle.
@@ -1305,7 +1324,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
       // The fee split is deterministic from (units, feeBps), both persisted
       // on the attempt, so retries always reuse the exact same split.
       const feeBps = attempt.feeBps ?? freshFeeCfg.feeBps;
-      const feeUnits = (units * BigInt(feeBps)) / 10000n;
+      const feeUnits = calculateTradeFee(units, feeBps);
       const netUnits = units - feeUnits;
       const feeKey = feeIdempotencyKey("buy", key);
 
@@ -1490,14 +1509,14 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         throw new HttpError(422, "coin_not_priced", "This coin has no trade price yet.");
       }
       const priceMicro = toMicroUnits(String(coin.priceUsd)); // raw DB string, not the float
-      // Integer-exact: units = floor(amount / price); fee = floor(units * bps / 10000).
+      // Integer-exact: units = floor(amount / price); fee = max(floor(units * bps / 10000), 1).
       const units = amountMicro / priceMicro;
       if (units < 1n) {
         throw new HttpError(422, "amount_too_small", "amountUsd buys less than one whole coin at this price.");
       }
       const grossUsd = fromMicroUnits(units * priceMicro);
       const cfg = await getFeeConfig();
-      const feeUnits = (units * BigInt(cfg.feeBps)) / 10000n;
+      const feeUnits = calculateTradeFee(units, cfg.feeBps);
       const netUnits = units - feeUnits;
       sendJson(ctx.res, 200, {
         ...NETWORK_ENVELOPE,
@@ -1552,7 +1571,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         throw new HttpError(422, "coin_not_priced", "Both coins need a trade price for swaps.");
       }
       // Integer-exact: target = floor(offer_units * offer_price / target_price),
-      // fee = floor(target * bps / 10000), net = target - fee.
+      // fee = max(floor(target * bps / 10000), 1), net = target - fee.
       // Raw DB decimal strings — never the float round-trip.
       const targetPriceMicro = toMicroUnits(String(target.priceUsd));
       const offerPriceMicro = toMicroUnits(String(offer.priceUsd));
@@ -1573,7 +1592,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         throw new HttpError(422, "amount_too_small",
           "The offer is worth less than one whole target coin at current prices.");
       }
-      const feeUnits = (targetUnits * BigInt(cfg.feeBps)) / 10000n;
+      const feeUnits = calculateTradeFee(targetUnits, cfg.feeBps);
       const netUnits = targetUnits - feeUnits;
       sendJson(ctx.res, 200, {
         ...NETWORK_ENVELOPE,
@@ -1786,7 +1805,7 @@ export async function reconcileSettlements(): Promise<{ finished: number; compen
   const swapFeeSplit = async (a: SettlementAttempt): Promise<{ gross: bigint; fee: bigint; net: bigint; feeBps: number }> => {
     const gross = decimalToCoinUnits(a.units);
     const feeBps = a.feeBps ?? (await getFeeConfig()).feeBps;
-    const fee = a.feeUnits ? decimalToCoinUnits(a.feeUnits) : (gross * BigInt(feeBps)) / 10000n;
+    const fee = a.feeUnits ? decimalToCoinUnits(a.feeUnits) : calculateTradeFee(gross, feeBps);
     return { gross, fee, net: gross - fee, feeBps };
   };
 
@@ -1978,7 +1997,7 @@ export async function reconcileSettlements(): Promise<{ finished: number; compen
         const unitsBase = decimalToCoinUnits(a.units);
         const feeBps = a.feeBps ?? (await getFeeConfig()).feeBps;
         const feeUnits = a.feeUnits ? decimalToCoinUnits(a.feeUnits)
-          : (unitsBase * BigInt(feeBps)) / 10000n;
+          : calculateTradeFee(unitsBase, feeBps);
         const netUnits = unitsBase - feeUnits;
         let floatBal: bigint;
         try {

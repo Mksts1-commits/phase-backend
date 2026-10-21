@@ -152,6 +152,26 @@ export function calculateFee(grossBaseUnits: bigint, feeBps: number): FeeSplit {
   return { fee, net: grossBaseUnits - fee };
 }
 
+/**
+ * Minimum Phase fee: 1 whole coin of the fee-denominated asset.
+ * When the bps cut rounds to dust (e.g. under a cent), the floor binds —
+ * every transaction costs at least 1 coin.
+ */
+export const FEE_MIN_WHOLE_UNITS = 1n;
+
+/**
+ * Trade fee in whole coin units: max(bps cut, 1-coin floor).
+ * Pure integer math; deterministic from (units, feeBps).
+ */
+export function calculateTradeFee(units: bigint, feeBps: number): bigint {
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_DENOMINATOR) {
+    throw new Error(`invalid_fee_bps: ${feeBps}`);
+  }
+  if (units < 0n) throw new Error("negative_units");
+  const bpsFee = (units * BigInt(feeBps)) / BigInt(FEE_BPS_DENOMINATOR);
+  return bpsFee < FEE_MIN_WHOLE_UNITS ? FEE_MIN_WHOLE_UNITS : bpsFee;
+}
+
 /** Convenience wrapper for 6dp decimal strings (USD-style amounts). */
 export function calculateFeeOnDecimal(grossDecimal: string, feeBps: number): {
   feeDecimal: string;
