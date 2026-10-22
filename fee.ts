@@ -155,9 +155,31 @@ export function calculateFee(grossBaseUnits: bigint, feeBps: number): FeeSplit {
 /**
  * Minimum Phase fee: 1 whole coin of the fee-denominated asset.
  * When the bps cut rounds to dust (e.g. under a cent), the floor binds —
- * every transaction costs at least 1 coin.
+ * every transaction costs at least 1 coin — UNLESS the de minimis waiver
+ * below applies, in which case the trade is free.
  */
 export const FEE_MIN_WHOLE_UNITS = 1n;
+
+/**
+ * De minimis fee waiver (Mike 2026-10-22): when the nominal bps fee on a
+ * trade is worth less than $0.05, the trade is free — no fee is charged at
+ * all. $0.05 in microunits.
+ */
+export const FEE_WAIVER_USD_MICRO = 50_000n;
+
+/**
+ * True when the nominal bps fee on grossUsdMicro is worth less than $0.05.
+ * Pure integer math: waive iff floor(grossUsd * bps / 10000) < 50_000,
+ * i.e. grossUsdMicro * feeBps < 50_000 * 10000. At 80 bps that is a gross
+ * trade under $6.25.
+ */
+export function isFeeWaived(grossUsdMicro: bigint, feeBps: number): boolean {
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_DENOMINATOR) {
+    throw new Error(`invalid_fee_bps: ${feeBps}`);
+  }
+  if (grossUsdMicro < 0n) throw new Error("negative_gross_usd");
+  return grossUsdMicro * BigInt(feeBps) < FEE_WAIVER_USD_MICRO * BigInt(FEE_BPS_DENOMINATOR);
+}
 
 /**
  * Trade fee in whole coin units: max(bps cut, 1-coin floor).
@@ -170,6 +192,17 @@ export function calculateTradeFee(units: bigint, feeBps: number): bigint {
   if (units < 0n) throw new Error("negative_units");
   const bpsFee = (units * BigInt(feeBps)) / BigInt(FEE_BPS_DENOMINATOR);
   return bpsFee < FEE_MIN_WHOLE_UNITS ? FEE_MIN_WHOLE_UNITS : bpsFee;
+}
+
+/**
+ * Trade fee in whole coin units with the de minimis waiver applied:
+ * 0 when the nominal bps fee on the trade's gross USD value is worth less
+ * than $0.05 (the trade is free), otherwise max(bps cut, 1-coin floor).
+ * grossUsdMicro is the trade's gross value in microunits (units * priceMicro).
+ * Pure integer math; deterministic from (units, feeBps, grossUsdMicro).
+ */
+export function calculateTradeFeeWithWaiver(units: bigint, feeBps: number, grossUsdMicro: bigint): bigint {
+  return isFeeWaived(grossUsdMicro, feeBps) ? 0n : calculateTradeFee(units, feeBps);
 }
 
 /** Convenience wrapper for 6dp decimal strings (USD-style amounts). */

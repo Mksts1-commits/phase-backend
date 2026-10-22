@@ -16,6 +16,9 @@ import {
   calculateFee,
   calculateFeeOnDecimal,
   calculateTradeFee,
+  calculateTradeFeeWithWaiver,
+  isFeeWaived,
+  FEE_WAIVER_USD_MICRO,
   FEE_MIN_WHOLE_UNITS,
   feeIdempotencyKey,
   FEE_BPS_DENOMINATOR,
@@ -26,6 +29,7 @@ import {
   decimalToCoinUnits,
   markFeeSettled,
 } from "./fee.js";
+import { grossUnitsForNet } from "./marketplace.js";
 
 let passed = 0;
 let failed = 0;
@@ -213,6 +217,52 @@ console.log("fee math — 1-coin minimum floor (calculateTradeFee)");
   threw = false;
   try { calculateTradeFee(-5n, 80); } catch { threw = true; }
   ok("negative units throws", threw);
+}
+
+console.log("fee math — de minimis waiver (isFeeWaived / calculateTradeFeeWithWaiver)");
+{
+  eq("waiver threshold is $0.05", FEE_WAIVER_USD_MICRO, 50_000n);
+  // At 80 bps the nominal fee on $6.24 is $0.04992 < $0.05 -> waived.
+  ok("$6.24 @80bps waived", isFeeWaived(toMicroUnits("6.24"), 80));
+  // $6.25 -> exactly $0.05 -> NOT less than -> fee applies.
+  ok("$6.25 @80bps not waived", !isFeeWaived(toMicroUnits("6.25"), 80));
+  // Exact integer boundary: grossUsdMicro * bps < 500_000_000.
+  ok("499_999_999 product waived", isFeeWaived(6_249_999n, 80)); // 6_249_999*80 = 499_999_920
+  ok("500_000_000 product not waived", !isFeeWaived(6_250_000n, 80)); // = 500_000_000
+  ok("$0 gross waived", isFeeWaived(0n, 80));
+  ok("0 bps waived", isFeeWaived(toMicroUnits("100"), 0));
+  ok("$1000 @80bps not waived", !isFeeWaived(toMicroUnits("1000"), 80));
+
+  // Waiver-aware trade fee: 2 units of a $1 coin = $2 gross -> free.
+  eq("2 units @ $1 -> fee 0 (waived)", calculateTradeFeeWithWaiver(2n, 80, 2n * toMicroUnits("1")), 0n);
+  // 10 units @ $1 = $10 gross -> 80bps = $0.08 >= $0.05 -> 1-coin floor binds.
+  eq("10 units @ $1 -> fee 1 (floor)", calculateTradeFeeWithWaiver(10n, 80, 10n * toMicroUnits("1")), 1n);
+  // 200 units @ $1 = $200 -> bps cut = 1 coin, floor = 1.
+  eq("200 units @ $1 -> fee 1", calculateTradeFeeWithWaiver(200n, 80, 200n * toMicroUnits("1")), 1n);
+  // 1000 units @ $1 -> bps cut = 8 coins.
+  eq("1000 units @ $1 -> fee 8", calculateTradeFeeWithWaiver(1000n, 80, 1000n * toMicroUnits("1")), 8n);
+  // Cheap coin: 100 units @ $0.05 = $5 gross -> waived even though bps cut is 0.
+  eq("100 units @ $0.05 -> fee 0 (waived)", calculateTradeFeeWithWaiver(100n, 80, 100n * toMicroUnits("0.05")), 0n);
+  // Conservation holds with the waiver: fee + net = gross.
+  for (const [u, p] of [[2n, "1"], [10n, "1"], [1000n, "1"]] as Array<[bigint, string]>) {
+    const f = calculateTradeFeeWithWaiver(u, 80, u * toMicroUnits(p));
+    ok(`conservation at ${u} units @ $${p}`, f + (u - f) === u);
+  }
+  // Invalid inputs throw.
+  let threw = false;
+  try { isFeeWaived(-1n, 80); } catch { threw = true; }
+  ok("negative grossUsd throws", threw);
+  threw = false;
+  try { isFeeWaived(100n, -1); } catch { threw = true; }
+  ok("negative bps throws", threw);
+
+  // grossUnitsForNet with the waiver: net 2 @ $1 -> gross 2 (free, no +1).
+  const oneDollar = toMicroUnits("1");
+  eq("net 2 @ $1 -> gross 2 (waived)", grossUnitsForNet(2n, 80, oneDollar), 2n);
+  // net 100 @ $1 = $100 -> not waived -> gross 101 (1-coin floor).
+  eq("net 100 @ $1 -> gross 101", grossUnitsForNet(100n, 80, oneDollar), 101n);
+  // Waiver boundary through grossUnitsForNet: net 6 @ $1 = $6 < $6.25 -> free.
+  eq("net 6 @ $1 -> gross 6 (waived)", grossUnitsForNet(6n, 80, oneDollar), 6n);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
