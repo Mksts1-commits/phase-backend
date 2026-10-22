@@ -14,11 +14,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Connection, Keypair } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
   createMint,
   getOrCreateAssociatedTokenAccount,
   mintTo,
+  burn,
 } from "@solana/spl-token";
 
 export interface CreateCoinMintOptions {
@@ -208,4 +209,60 @@ export async function createCoinMint(
     decimals: COIN_DECIMALS,
     authorityAddress: authority.publicKey.toBase58(),
   };
+}
+
+/**
+ * Create an EMPTY SPL mint (no initial supply) for bridge use. The mint
+ * authority is the backend devnet authority. Devnet-only (same guards).
+ */
+export async function createBridgeMint(): Promise<{ mintAddress: string; authorityAddress: string }> {
+  assertDevnetNetworkEnv();
+  const connection = getConnection();
+  const authority = await getAuthority();
+  const mint = await createMint(
+    connection,
+    authority,
+    authority.publicKey,
+    null, // no freeze authority
+    COIN_DECIMALS
+  );
+  return { mintAddress: mint.toBase58(), authorityAddress: authority.publicKey.toBase58() };
+}
+
+/**
+ * Mint `baseUnits` (integer, 10^6 per whole unit) of an existing mint to an
+ * arbitrary destination address. Devnet-only (same guards as createCoinMint).
+ */
+export async function mintToAddress(
+  mintAddress: string,
+  destinationAddress: string,
+  baseUnits: bigint
+): Promise<string> {
+  assertDevnetNetworkEnv();
+  if (baseUnits <= 0n) throw new Error("[solana-mint] mintToAddress: amount must be positive");
+  const connection = getConnection();
+  const authority = await getAuthority();
+  const mint = new PublicKey(mintAddress);
+  const dest = new PublicKey(destinationAddress);
+  const ata = await getOrCreateAssociatedTokenAccount(connection, authority, mint, dest);
+  const sig = await mintTo(connection, authority, mint, ata.address, authority, baseUnits);
+  return sig;
+}
+
+/**
+ * Burn `baseUnits` of an existing mint from the holder's associated account.
+ * The holder signs. Devnet-only.
+ */
+export async function burnFromAddress(
+  mintAddress: string,
+  holder: any, // Keypair
+  baseUnits: bigint
+): Promise<string> {
+  assertDevnetNetworkEnv();
+  if (baseUnits <= 0n) throw new Error("[solana-mint] burnFromAddress: amount must be positive");
+  const connection = getConnection();
+  const mint = new PublicKey(mintAddress);
+  const ata = await getOrCreateAssociatedTokenAccount(connection, holder, mint, holder.publicKey);
+  const sig = await burn(connection, holder, ata.address, mint, holder, baseUnits);
+  return sig;
 }

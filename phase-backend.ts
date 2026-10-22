@@ -63,6 +63,8 @@ import { mountCoinEditRoutes } from "./coin-edit.js";
 import { mountBonusRoutes } from "./bonus.js";
 import { mountAuthRoutes, resolveBearerUserId } from "./auth.js";
 import { mountSovereignLedgerRoutes } from "./sovereign-ledger.js";
+import { mountBridgePublicRoutes } from "./bridge-public.js";
+import { mountBridgeRoutes } from "./bridge.js";
 import { mountMarketplaceRoutes } from "./marketplace.js";
 import { mountOffersRoutes } from "./offers.js";
 import { mountAdminRoutes } from "./admin.js";
@@ -1130,6 +1132,17 @@ mountAuthRoutes({ route, sendJson, HttpError });
 // Per-user sovereign chains with Ed25519-signed transactions. Write-through
 // Postgres persistence (migration 008) + boot restore; legal review pending.
 mountSovereignLedgerRoutes({ route, sendJson, HttpError });
+
+// --- 8e-vi-a. Bridge public verifiability (see bridge-public.ts) ---
+// Public, unauthenticated read routes for chain verification: anyone can fetch
+// blocks, balance proofs, tx proofs, and the sequencer key without an account.
+// Read-only; rate-limited. Existing authed ledger routes are untouched.
+mountBridgePublicRoutes({ route, sendJson, HttpError });
+
+// --- Bridge: vaults, lock-proof certificates, reserves (see bridge.ts) ---
+// Locking is a normal TRANSFER to a deterministic vault address; these routes
+// are public reads over that. No ledger-core consensus changes.
+mountBridgeRoutes({ route, sendJson, HttpError });
 
 // --- 8e-vii. Marketplace settlement (see marketplace.ts) ---
 // Two-legged trade settlement for sovereign coins: buyer's USD cash ledger
