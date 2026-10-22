@@ -464,6 +464,32 @@ async function persistMempoolDel(txId: string): Promise<void> {
   } catch (e) { persistLog(e, 'persistMempoolDel'); }
 }
 
+/**
+ * Read-only accessor for the block sequencer's raw 32-byte Ed25519 public key.
+ * Used by bridge verification endpoints so third parties can pin the key and
+ * verify block header signatures. Additive only — does not affect consensus.
+ */
+function getSequencerPublicKeyRaw(): Buffer {
+  return rawPublicKey(sequencerKeys.publicKey);
+}
+
+/**
+ * Fixed-format signed key announcement for the public sequencer endpoint.
+ * Signs ONLY the constant message "phase-sequencer/v1|<pubkeyHex>" — this is
+ * not a general signing oracle. Verifiers pin the pubkey out-of-band and check
+ * this self-attestation. Additive only — does not affect consensus.
+ */
+function getSequencerAnnouncement(): {
+  pubkeyHex: string;
+  message: string;
+  signatureHex: string;
+} {
+  const pubkeyHex = rawPublicKey(sequencerKeys.publicKey).toString("hex");
+  const message = `phase-sequencer/v1|${pubkeyHex}`;
+  const sig = crypto.sign(null, Buffer.from(message, "utf8"), sequencerKeys.privateKey);
+  return { pubkeyHex, message, signatureHex: sig.toString("hex") };
+}
+
 // The sequencer key is stable across restarts so blocks stay verifiable.
 async function loadOrCreateSequencerKey(): Promise<void> {
   const pool = await persistPoolAsync();
@@ -1444,4 +1470,6 @@ export {
   serializeBlock,
   txMerkleLeaf,
   LedgerError,
+  getSequencerPublicKeyRaw,
+  getSequencerAnnouncement,
 };
