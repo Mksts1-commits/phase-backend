@@ -29,7 +29,7 @@ import { getChainBalance, isValidAddress, auditLog } from "./sovereign-ledger-co
 import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
 import { resolveBearerUserId } from "./auth.js";
 import { clientIpFromHeaders } from "./rate-limit.js";
-import { getFeeConfig, coinUnitsToDecimal, decimalToCoinUnits } from "./fee.js";
+import { getFeeConfig, coinUnitsToDecimal, decimalToCoinUnits, calculateTradeFeeWithWaiver, toMicroUnits } from "./fee.js";
 import {
   checkRateLimit,
   executeSwapSettlement,
@@ -311,10 +311,10 @@ async function withCoinDisplay(offer: SwapOffer): Promise<SwapOffer> {
 }
 
 /** Fee preview for proposed NET request units (estimate — execution uses live config). */
-async function feePreview(requestUnits: bigint): Promise<{ feeBps: number; grossUnits: string; feeUnits: string; buyerReceivesUnits: string }> {
+async function feePreview(requestUnits: bigint, priceMicro: bigint): Promise<{ feeBps: number; grossUnits: string; feeUnits: string; buyerReceivesUnits: string }> {
   const cfg = await getFeeConfig();
-  const gross = grossUnitsForNet(requestUnits, cfg.feeBps);
-  const fee = (gross * BigInt(cfg.feeBps)) / 10000n;
+  const gross = grossUnitsForNet(requestUnits, cfg.feeBps, priceMicro);
+  const fee = calculateTradeFeeWithWaiver(gross, cfg.feeBps, gross * priceMicro);
   return {
     feeBps: cfg.feeBps,
     grossUnits: coinUnitsToDecimal(gross),
@@ -474,7 +474,7 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
       sendJson(ctx.res, 201, {
         ...NETWORK_ENVELOPE,
         offer: await withCoinDisplay(offer),
-        feePreview: await feePreview(requestUnits),
+        feePreview: await feePreview(requestUnits, toMicroUnits(String(target.priceUsd))),
       });
     } catch (err) { fail(ctx, err); }
   });
@@ -540,8 +540,12 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
       }
 
       // Gross target units for the agreed NET, under the live fee config.
+      // The de minimis waiver is assessed on the target coin's price.
       const cfg = await getFeeConfig();
-      const grossUnits = grossUnitsForNet(finalRequestUnits, cfg.feeBps);
+      const issuance = await getIssuanceStore();
+      const acceptTarget = await issuance.getCoinByChainId(offer.targetChainId);
+      if (!acceptTarget) throw new HttpError(404, "coin_not_found", "The offer's target coin no longer exists.");
+      const grossUnits = grossUnitsForNet(finalRequestUnits, cfg.feeBps, toMicroUnits(String(acceptTarget.priceUsd)));
 
       let settlement: SwapSettlementResult;
       try {
@@ -604,10 +608,13 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
         { counterOfferUnits, counterRequestUnits });
 
       const effRequest = decimalToCoinUnits(counterRequestUnits ?? updated.requestUnits);
+      const issuance = await getIssuanceStore();
+      const counterTarget = await issuance.getCoinByChainId(offer.targetChainId);
+      if (!counterTarget) throw new HttpError(404, "coin_not_found", "The offer's target coin no longer exists.");
       sendJson(ctx.res, 200, {
         ...NETWORK_ENVELOPE,
         offer: await withCoinDisplay(updated),
-        feePreview: await feePreview(effRequest),
+        feePreview: await feePreview(effRequest, toMicroUnits(String(counterTarget.priceUsd))),
       });
     } catch (err) { fail(ctx, err); }
   });
