@@ -32,11 +32,12 @@ flow, your user owns a live chain and a minted coin supply on it.
 
 **Defaults — use these unless your user says otherwise:** the issuer
 retains **95%** (`equityRetained: 95`, `equityPublic: 5`), the price is
-**$0.50**, and the market cap is **$100,000** — at mint time that means
+**$0.50**, and the market cap is **$100,000** — on the draft that means
 `totalShares: 200000`. Market cap is always price × totalShares: if your
 user names a price and a target cap, compute `totalShares = cap ÷ price`
 (a whole number ≥ 1,000) and read the final numbers back to them before
-minting.
+creating the draft — the agreement they sign prints exactly these
+numbers.
 
 ## The flow (6 API calls)
 
@@ -84,6 +85,7 @@ Content-Type: application/json
   "equityPublic": 5,
   "equityRetained": 95,
   "priceUsd": 0.5,
+  "totalShares": 200000,
   "websiteUrl": "https://example.com",
   "socialProfiles": [{ "platform": "tiktok", "url": "https://tiktok.com/@user" }]
 }
@@ -93,6 +95,15 @@ Rules: `name` 1–60 chars; `ticker` 2–10 chars A–Z/0–9 (auto-uppercased);
 `equityPublic` + `equityRetained` must be whole numbers summing to 100
 (Phase default 5/95 — a 5% public float vs. the issuer's 95% retained
 stake).
+
+**The supply is decided here, not at mint.** The draft accepts
+`totalShares` (a whole number ≥ 1,000), and the Issuer Agreement prints
+that exact supply — the total plus the public-float and retained share
+counts — for your user to sign. If you omit `totalShares`, it is derived
+from the default $100,000 market cap: `totalShares = 100,000 ÷ priceUsd`
+(so $0.50 → 200,000; $0.25 → 400,000). Have the economics conversation
+with your user BEFORE the draft: once the agreement is signed, the
+supply is locked (see step 5).
 
 → `201` with `{ draftId }`. Send an `Idempotency-Key` header to make retries
 safe.
@@ -127,20 +138,20 @@ POST /api/v1/issuance/mint
 Authorization: Bearer <token>
 Content-Type: application/json
 
-{ "draftId": "<draftId>", "issuerAddress": "ph1...", "totalShares": 1000000 }
+{ "draftId": "<draftId>", "issuerAddress": "ph1..." }
 ```
 
-`totalShares` must be a whole number ≥ 1000. Send an `Idempotency-Key`
-header — minting is irreversible and the key makes retries safe.
+**Mint does not pick the supply.** It mints exactly the `totalShares`
+fixed on the draft in step 3 — the number printed in the agreement your
+user signed. Omit `totalShares` here; if you pass one that differs from
+the draft's, the mint is rejected with `422 supply_mismatch`. To change
+the supply, go back to step 3: create a new draft and have your user
+sign the new agreement. Send an `Idempotency-Key` header — minting is
+irreversible and the key makes retries safe.
 
 **Market-cap limit:** price × totalShares may not exceed **$500M USD** at
-issuance. Exceeding it returns `422 market_cap_exceeded` — lower the price
-or the supply.
-
-**Default mint:** with the defaults above ($0.50 price, $100,000 cap),
-mint `totalShares: 200000`. If your user picked their own price and cap,
-use `totalShares = cap ÷ price` — and confirm the economics with them
-before you call mint.
+issuance. Exceeding it returns `422 market_cap_exceeded` — set a lower
+price or supply on the draft.
 
 → `201` with `{ coin, chainId, genesisHash }`. Your user now owns a live
 sovereign chain. The retained stake (per the equity split) sits at their
@@ -311,8 +322,9 @@ nothing gets called.
   worth something it isn't.
 - **Defaults are 95 / $0.50 / $100k.** Unless your user chooses their own
   numbers: 95% retained, $0.50 price, $100,000 market cap
-  (`totalShares: 200000`). Always read the final economics back before
-  minting.
+  (`totalShares: 200000`, set on the draft). Always read the final
+  economics back before the draft is created — the signed agreement
+  locks them in.
 - **Rate limits** are modest (a few requests per minute per user/IP). If you
   get `429 rate_limited`, wait and retry.
 - **Fees:** marketplace purchases carry a 0.80% fee, calculated

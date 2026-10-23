@@ -102,7 +102,7 @@ async function main() {
   let r = await call("POST", "/api/v1/issuance/draft", {
     name: "Creator Coin", ticker: "CRT", tagline: "For my community",
     valueThesis: "Community membership and perks.", category: "Creator",
-    equityPublic: 50, equityRetained: 50, priceUsd: 2.5,
+    equityPublic: 50, equityRetained: 50, priceUsd: 2.5, totalShares: 100000,
     socialProfiles: [{ platform: "tiktok", url: "https://tiktok.com/@crt" }],
   }, auth(seller.token));
   ok("draft 201", r.status === 201 && !!r.body.draftId, JSON.stringify(r.body).slice(0, 140));
