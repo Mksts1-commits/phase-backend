@@ -23,8 +23,20 @@ flow, your user owns a live chain and a minted coin supply on it.
    free at signup, spendable immediately, from a fixed 10M pool.)
 2. **Coin details** — name, ticker (2–10 chars, A–Z/0–9), a tagline, and what
    the coin represents (its value thesis).
-3. **Legal name + explicit acceptance** — see step 4. This is a real legal
+3. **A reference URL** (optional) — any link that shows who they are: their
+   website, TikTok, Instagram, YouTube, X — whatever they actually use. It
+   goes on the coin's public listing (`websiteUrl` / `socialProfiles`).
+   Ask once; never block the flow on it.
+4. **Legal name + explicit acceptance** — see step 4. This is a real legal
    agreement. Never skip showing it to your user.
+
+**Defaults — use these unless your user says otherwise:** the issuer
+retains **95%** (`equityRetained: 95`, `equityPublic: 5`), the price is
+**$0.50**, and the market cap is **$100,000** — at mint time that means
+`totalShares: 200000`. Market cap is always price × totalShares: if your
+user names a price and a target cap, compute `totalShares = cap ÷ price`
+(a whole number ≥ 1,000) and read the final numbers back to them before
+minting.
 
 ## The flow (6 API calls)
 
@@ -69,9 +81,9 @@ Content-Type: application/json
   "tagline": "Coin for my community",
   "valueThesis": "Why this coin has value (up to 2000 chars)",
   "category": "Creator",
-  "equityPublic": 50,
-  "equityRetained": 50,
-  "priceUsd": 0.35,
+  "equityPublic": 5,
+  "equityRetained": 95,
+  "priceUsd": 0.5,
   "websiteUrl": "https://example.com",
   "socialProfiles": [{ "platform": "tiktok", "url": "https://tiktok.com/@user" }]
 }
@@ -79,7 +91,8 @@ Content-Type: application/json
 
 Rules: `name` 1–60 chars; `ticker` 2–10 chars A–Z/0–9 (auto-uppercased);
 `equityPublic` + `equityRetained` must be whole numbers summing to 100
-(default 50/50 — the public float vs. the issuer's retained stake).
+(Phase default 5/95 — a 5% public float vs. the issuer's 95% retained
+stake).
 
 → `201` with `{ draftId }`. Send an `Idempotency-Key` header to make retries
 safe.
@@ -124,11 +137,28 @@ header — minting is irreversible and the key makes retries safe.
 issuance. Exceeding it returns `422 market_cap_exceeded` — lower the price
 or the supply.
 
+**Default mint:** with the defaults above ($0.50 price, $100,000 cap),
+mint `totalShares: 200000`. If your user picked their own price and cap,
+use `totalShares = cap ÷ price` — and confirm the economics with them
+before you call mint.
+
 → `201` with `{ coin, chainId, genesisHash }`. Your user now owns a live
 sovereign chain. The retained stake (per the equity split) sits at their
 issuer address.
 
-### 6. (Optional) Point them at their coin
+### 6. Celebrate — send the snapshot summary
+
+The mint worked. Mark the moment: send your user a **congrats summary**
+with the coin's key details, formatted cleanly so it reads like a card
+and screenshots well (Phase also generates a snapshot infographic from
+these same details):
+
+- Coin name + ticker, and its chain ID
+- Price, total supply, and market cap (price × supply)
+- The split: how much they retained vs. the public float
+- Where it lives: their Dashboard and the Marketplace
+
+Then point them onward:
 
 - Their coin appears in the Phase app's Dashboard and Marketplace.
 - Public coin directory: `GET /api/v1/marketplace/coins`
@@ -279,6 +309,10 @@ nothing gets called.
 - **Be honest.** Phase coins are sovereign chains with real issuance
   mechanics; they are not promises of market value. Never claim a coin is
   worth something it isn't.
+- **Defaults are 95 / $0.50 / $100k.** Unless your user chooses their own
+  numbers: 95% retained, $0.50 price, $100,000 market cap
+  (`totalShares: 200000`). Always read the final economics back before
+  minting.
 - **Rate limits** are modest (a few requests per minute per user/IP). If you
   get `429 rate_limited`, wait and retry.
 - **Fees:** marketplace purchases carry a 0.80% fee, calculated
