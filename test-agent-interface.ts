@@ -22,6 +22,7 @@ import { mountMarketplaceRoutes } from "./marketplace.js";
 import { mountOffersRoutes } from "./offers.js";
 import { mountCoinEditRoutes } from "./coin-edit.js";
 import { mountAgentInterfaceRoutes } from "./agent-interface.js";
+import { bandForScore } from "./legitimacy.js";
 
 if (process.env.DATABASE_URL) {
   console.error("Refusing to run: unset DATABASE_URL so the test stays hermetic (in-memory).");
@@ -168,6 +169,26 @@ async function main() {
   ok("card display strings", crtCard?.display?.price === "$2.50" && crtCard?.display?.marketCap === "$250,000.00",
     JSON.stringify(crtCard?.display));
   ok("card carries category + tagline", crtCard?.category === "Creator" && crtCard?.tagline === "For my community");
+
+  // Phase Cred on marketplace cards: the compact public view (score,
+  // band key, earned proof items only — no hints, no legacy bandLabel).
+  const crtLeg = crtCard?.legitimacy;
+  ok("card carries Phase Cred view",
+    !!crtLeg && typeof crtLeg.score === "number" && Array.isArray(crtLeg.earned),
+    JSON.stringify(crtLeg));
+  ok("Phase Cred earned points sum to score",
+    !!crtLeg && crtLeg.earned.reduce((s: number, i: any) => s + i.points, 0) === crtLeg.score);
+  ok("Phase Cred band matches score thresholds",
+    !!crtLeg && crtLeg.band === bandForScore(crtLeg.score).band);
+  ok("Phase Cred earned includes signed agreement (+20)",
+    !!crtLeg && crtLeg.earned.some((i: any) => i.key === "agreement_signed" && i.points === 20),
+    JSON.stringify(crtLeg?.earned));
+  ok("Phase Cred view has no bandLabel / hints",
+    !!crtLeg && !("bandLabel" in crtLeg) && crtLeg.earned.every((i: any) => !("hint" in i)));
+  const byrLeg = (r.body.coins ?? []).find((c: any) => c.ticker === "BYR")?.legitimacy;
+  ok("record-less coin scores 0 / meme in marketplace",
+    byrLeg?.score === 0 && byrLeg?.band === "meme" && byrLeg?.earned?.length === 0,
+    JSON.stringify(byrLeg));
   ok("categories include Creator", (r.body.categories ?? []).some((c: any) => c.name === "Creator" && c.count === 1));
 
   r = await call("GET", "/api/v1/agent/marketplace", {}, {}, "search=crt");
@@ -280,6 +301,17 @@ async function main() {
   r = await call("GET", "/api/v1/marketplace/coins");
   ok("legacy /marketplace/coins still lists coins",
     r.status === 200 && (r.body.coins ?? []).length === 2, JSON.stringify(r.body).slice(0, 120));
+  const dirCrt = (r.body.coins ?? []).find((c: any) => c.ticker === "CRT");
+  ok("legacy directory rows carry Phase Cred",
+    !!dirCrt?.legitimacy && dirCrt.legitimacy.score >= 20 &&
+    dirCrt.legitimacy.band === bandForScore(dirCrt.legitimacy.score).band &&
+    dirCrt.legitimacy.earned.some((i: any) => i.key === "agreement_signed") &&
+    !("bandLabel" in dirCrt.legitimacy),
+    JSON.stringify(dirCrt?.legitimacy));
+  const dirByr = (r.body.coins ?? []).find((c: any) => c.ticker === "BYR");
+  ok("legacy directory record-less coin scores 0 / meme",
+    dirByr?.legitimacy?.score === 0 && dirByr?.legitimacy?.band === "meme",
+    JSON.stringify(dirByr?.legitimacy));
 
   clearInterval(sequencer as any);
   console.log(`\n${passed} passed, ${failed} failed`);

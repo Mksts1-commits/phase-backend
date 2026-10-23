@@ -29,6 +29,12 @@ import {
   auditLog,
 } from "./sovereign-ledger-core.js";
 import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
+import {
+  computeLegitimacyForCoinsByIssuer,
+  publicLegitimacyView,
+  EMPTY_PUBLIC_LEGITIMACY,
+  type LegitimacyScore,
+} from "./legitimacy.js";
 import { resolveBearerUserId } from "./auth.js";
 import { checkRateLimit as sharedCheckRateLimit, clientIpFromHeaders } from "./rate-limit.js";
 import {
@@ -1646,6 +1652,14 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
       }
       const issuance = await getIssuanceStore();
       const coins = await issuance.listAllCoins();
+      // Phase Cred for every listed coin — the same scorer the dashboard
+      // uses (legitimacy.ts), exposed as the compact public view: score,
+      // band key, and the earned proof items. Scoring degrades to a zero
+      // view per coin; the directory itself never fails on it.
+      let legitimacyByCoin = new Map<string, LegitimacyScore>();
+      try {
+        legitimacyByCoin = await computeLegitimacyForCoinsByIssuer(coins);
+      } catch { legitimacyByCoin = new Map<string, LegitimacyScore>(); }
       const out = [];
       for (const c of coins) {
         let category: string | null = null;
@@ -1690,6 +1704,9 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
           createdAt: c.createdAt,
           floatAvailable,
           online: true,
+          legitimacy: legitimacyByCoin.has(c.id)
+            ? publicLegitimacyView(legitimacyByCoin.get(c.id)!)
+            : EMPTY_PUBLIC_LEGITIMACY,
         });
       }
       sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, coins: out });

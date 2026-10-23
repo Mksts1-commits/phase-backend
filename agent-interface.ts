@@ -15,7 +15,9 @@
  *   GET    /api/v1/agent/marketplace  (public; Bearer optional) —
  *          the marketplace shaped for agent presentation: coin cards
  *          with display-ready strings, search/category filters, cursor
- *          pagination, and (when authed) `mine` / `watchlisted` flags.
+ *          pagination, each card's Phase Cred (legitimacy.ts public
+ *          view: score, band, earned proof items), and (when authed)
+ *          `mine` / `watchlisted` flags.
  *   GET    /api/v1/agent/watchlist    (Bearer) — my watched coin cards.
  *   POST   /api/v1/agent/watchlist    (Bearer) — watch a coin (idempotent).
  *   DELETE /api/v1/agent/watchlist/:coinId (Bearer) — unwatch (idempotent).
@@ -47,10 +49,14 @@ import { getChainBalance, PUBLIC_FLOAT_ADDRESS, auditLog } from "./sovereign-led
 import { checkRateLimit, clientIpFromHeaders } from "./rate-limit.js";
 import {
   computeLegitimacyForCoins,
+  computeLegitimacyForCoinsByIssuer,
+  publicLegitimacyView,
   scoreLegitimacy,
   summarizeLegitimacy,
   EMPTY_LEGITIMACY_FACTS,
+  EMPTY_PUBLIC_LEGITIMACY,
   type LegitimacyScore,
+  type PublicLegitimacy,
 } from "./legitimacy.js";
 
 export interface AgentInterfaceMountDeps {
@@ -183,6 +189,9 @@ interface CoinCard {
   logoUrl: string | null;
   createdAt: string;
   online: boolean;
+  /** Compact public Phase Cred view (marketplace cards only; the
+   *  dashboard replaces it with the full LegitimacyScore). */
+  legitimacy?: PublicLegitimacy;
   display: { price: string; marketCap: string; headline: string };
   mine?: boolean;
   watchlisted?: boolean;
@@ -515,6 +524,19 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
       const issuance = await getIssuanceStore();
       const all = await issuance.listAllCoins();
       let cards = await Promise.all(all.map((c) => coinCard(c)));
+
+      // Phase Cred (public view): the same scorer the dashboard runs,
+      // in the compact earned-only shape for marketplace presentation.
+      // Degrades to a zero view per card — browsing never fails on it.
+      const legitimacyByCoin = await computeLegitimacyForCoinsByIssuer(all).catch(
+        () => new Map<string, LegitimacyScore>()
+      );
+      cards = cards.map((c) => ({
+        ...c,
+        legitimacy: legitimacyByCoin.has(c.id)
+          ? publicLegitimacyView(legitimacyByCoin.get(c.id)!)
+          : EMPTY_PUBLIC_LEGITIMACY,
+      }));
 
       const catCounts = new Map<string, number>();
       for (const c of cards) {

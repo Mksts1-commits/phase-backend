@@ -48,6 +48,8 @@ import {
   ownershipHintFlavor,
   BROKEN_LINK_HINT,
   EMPTY_LEGITIMACY_FACTS,
+  EMPTY_PUBLIC_LEGITIMACY,
+  publicLegitimacyView,
   LEGITIMACY_RUBRIC,
   type LegitimacyFacts,
   type LegitimacyScore,
@@ -242,6 +244,24 @@ console.log("legitimacy scorer (pure)");
   const brokenSocial = itemOf(scoreLegitimacy(F({ socialProfileCount: 0, socialProfilesExist: true })), "social_profile");
   ok("social profile: listed but all broken -> 0 with the broken-link hint",
     brokenSocial.earned === 0 && brokenSocial.hint === BROKEN_LINK_HINT, brokenSocial.hint);
+
+  // --- public (marketplace) view: compact, earned-only -------------------
+  const pubFull = publicLegitimacyView(scoreLegitimacy(FULL));
+  ok("public view: full facts -> 100 / phase band key",
+    pubFull.score === 100 && pubFull.band === "phase", JSON.stringify(pubFull).slice(0, 120));
+  ok("public view: earned points sum to the score",
+    pubFull.earned.reduce((s, i) => s + i.points, 0) === pubFull.score);
+  ok("public view: earned entries are {key,label,points} only — no hints, no bandLabel",
+    pubFull.earned.length === 10 &&
+    pubFull.earned.every((i) => Object.keys(i).sort().join(",") === "key,label,points") &&
+    !("bandLabel" in pubFull) && !("groups" in pubFull),
+    JSON.stringify(pubFull).slice(0, 160));
+  const pubEmpty = publicLegitimacyView(scoreLegitimacy(EMPTY_LEGITIMACY_FACTS));
+  ok("public view: empty facts -> 0 / meme / no earned items",
+    pubEmpty.score === 0 && pubEmpty.band === "meme" && pubEmpty.earned.length === 0);
+  ok("public view: EMPTY_PUBLIC_LEGITIMACY is the zero view",
+    EMPTY_PUBLIC_LEGITIMACY.score === 0 && EMPTY_PUBLIC_LEGITIMACY.band === "meme" &&
+    EMPTY_PUBLIC_LEGITIMACY.earned.length === 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -550,6 +550,55 @@ export async function computeLegitimacyForCoins(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Public (marketplace) view — compact and earned-only. The marketplace
+// shows every coin's Phase Cred to everyone: the score, the band key,
+// and the proof items actually earned. It never exposes the unearned
+// items or their hints (those are the owner's climb checklist —
+// dashboard-only), and it never carries the legacy bandLabel string:
+// consumers derive display labels from the numeric score / band key.
+// ---------------------------------------------------------------------------
+
+export interface PublicLegitimacy {
+  score: number;
+  band: LegitimacyBandKey;
+  earned: Array<{ key: string; label: string; points: number }>;
+}
+
+export function publicLegitimacyView(s: LegitimacyScore): PublicLegitimacy {
+  const earned: PublicLegitimacy["earned"] = [];
+  for (const g of s.groups) {
+    for (const it of g.items) {
+      if (it.done) earned.push({ key: it.key, label: it.label, points: it.points });
+    }
+  }
+  return { score: s.score, band: s.band, earned };
+}
+
+export const EMPTY_PUBLIC_LEGITIMACY: PublicLegitimacy = publicLegitimacyView(
+  scoreLegitimacy(EMPTY_LEGITIMACY_FACTS)
+);
+
+/** Score a mixed-issuer coin list (the marketplace directory): group by
+ *  issuer so each issuer's user-level facts are gathered once, then run
+ *  the same scorer the dashboard uses. Keyed by coin id. */
+export async function computeLegitimacyForCoinsByIssuer(
+  coins: IssuanceCoin[]
+): Promise<Map<string, LegitimacyScore>> {
+  const out = new Map<string, LegitimacyScore>();
+  const byUser = new Map<string, IssuanceCoin[]>();
+  for (const c of coins) {
+    const arr = byUser.get(c.userId);
+    if (arr) arr.push(c);
+    else byUser.set(c.userId, [c]);
+  }
+  for (const [userId, userCoins] of byUser) {
+    const scores = await computeLegitimacyForCoins(userId, userCoins);
+    for (const [id, s] of scores) out.set(id, s);
+  }
+  return out;
+}
+
 export interface UserLegitimacy {
   coins: Array<{
     coinId: string;
