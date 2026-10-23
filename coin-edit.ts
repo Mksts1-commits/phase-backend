@@ -3,14 +3,17 @@
  *
  * PATCH /api/v1/coins/:id
  *   Owner-only. Editable: the linked draft's social_profiles + tagline,
- *   and the coin's website_url. Economic fundamentals (name, ticker,
- *   supply, price, value thesis) are intentionally NOT editable —
- *   they were frozen at mint and, for the thesis, signed in the
- *   minting agreement.
+ *   and the coin's website_url + logo_url (migration 024; a set logo
+ *   earns Legitimacy Score points). Economic fundamentals (name,
+ *   ticker, supply, price, value thesis) are intentionally NOT
+ *   editable — they were frozen at mint and, for the thesis, signed
+ *   in the minting agreement.
  *
  * POST /api/v1/coins/:id/documents          (owner, JSON+base64;
- *   optional docType: 'business_license' | 'other' — migration 023;
- *   a business-license document earns Legitimacy Score points)
+ *   optional docType: 'business_license' | 'government_id' |
+ *   'bank_statement' | 'financial_report' | 'other' — migration 023+;
+ *   license / government-ID / bank-statement documents earn
+ *   Legitimacy Score points)
  * GET  /api/v1/coins/:id/documents          (public, metadata list)
  * GET  /api/v1/coins/:id/documents/:docId   (public, download)
  * DELETE /api/v1/coins/:id/documents/:docId (owner)
@@ -23,6 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { getPool } from "./db.js";
 import { resolveBearerUserId } from "./auth.js";
+import { ensureLinkVerdicts, normalizeLinkStatus } from "./link-check.js";
 
 export interface CoinEditMountDeps {
   route: (method: string, path: string, handler: (ctx: any) => void | Promise<void>) => void;
@@ -65,10 +69,22 @@ const DOC_MIME_ALLOW = new Set([
 ]);
 const MAX_DOC_BYTES = 10 * 1024 * 1024;
 const MAX_DOCS_PER_COIN = 10;
-// Document types the Legitimacy Score understands (migration 023).
-// 'business_license' covers a business license or registration document;
-// everything else is 'other' and earns no legitimacy points.
-const DOC_TYPES = new Set(["business_license", "other"]);
+// Document types the Legitimacy Score understands (migration 023+).
+// The license/ownership item accepts the issuer's registration or
+// ownership proof, whatever their asset class: 'business_license' /
+// 'business_registration' for businesses; 'deed',
+// 'mortgage_document', 'property_tax', 'lease_agreement' for real
+// estate and rentals; 'certificate_of_authenticity', 'appraisal',
+// 'provenance_record' for collectables. 'government_id' verifies the
+// signer's legal name; 'bank_statement' / 'financial_report' cover
+// the bank item (documentary proof, not a live bank connection).
+// Everything else is 'other' and earns no legitimacy points.
+const DOC_TYPES = new Set([
+  "business_license", "business_registration",
+  "deed", "mortgage_document", "property_tax", "lease_agreement",
+  "certificate_of_authenticity", "appraisal", "provenance_record",
+  "government_id", "bank_statement", "financial_report", "other",
+]);
 const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
 
 function cleanUrl(raw: string, maxLen: number): string | null {
@@ -100,17 +116,17 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
   };
 
   /** The coin row, or 404. Ownership is checked by the caller. */
-  async function getCoin(id: string): Promise<{ id: string; userId: string; draftId: string | null }> {
+  async function getCoin(id: string): Promise<{ id: string; userId: string; draftId: string | null; linkStatus: unknown }> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT id, user_id AS "userId", draft_id AS "draftId" FROM issuance_coins WHERE id = $1`,
+      `SELECT id, user_id AS "userId", draft_id AS "draftId", link_status AS "linkStatus" FROM issuance_coins WHERE id = $1`,
       [id]
     );
     if (r.rows.length === 0) throw new HttpError(404, "coin_not_found", "No coin with that id.");
     return r.rows[0];
   }
 
-  async function requireOwner(ctx: Ctx, userId: string): Promise<{ id: string; draftId: string | null }> {
+  async function requireOwner(ctx: Ctx, userId: string): Promise<{ id: string; draftId: string | null; linkStatus: unknown }> {
     const coin = await getCoin(ctx.params.id);
     if (coin.userId !== userId) throw new HttpError(403, "forbidden", "Only the issuer can edit this coin.");
     return coin;
@@ -125,6 +141,9 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
 
       const pool = getPool();
       const out: Record<string, unknown> = {};
+      // URLs this PATCH sets — they get their one liveness verdict
+      // check below (write time; see the merge before sendJson).
+      const touchedUrls: string[] = [];
 
       // Draft-owned fields: social profiles + tagline.
       if (coin.draftId && ("socialProfiles" in body || "tagline" in body)) {
@@ -150,6 +169,7 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
           params.push(JSON.stringify([...byPlatform.values()]));
           sets.push(`social_profiles = $${params.length}`);
           out.socialProfiles = [...byPlatform.values()];
+          touchedUrls.push(...[...byPlatform.values()].map((p) => p.url));
         }
         if ("tagline" in body) {
           const tagline = str(body.tagline).trim().slice(0, 140) || null;
@@ -173,6 +193,34 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
           : cleanUrl(str(body.websiteUrl), 500);
         await pool.query(`UPDATE issuance_coins SET website_url = $1 WHERE id = $2`, [websiteUrl, coin.id]);
         out.websiteUrl = websiteUrl;
+        if (websiteUrl) touchedUrls.push(websiteUrl);
+      }
+
+      // Coin-owned field: logo URL (migration 024). Same contract as
+      // websiteUrl: null/empty clears it, otherwise a cleaned http(s)
+      // URL. A set logo earns the Legitimacy Score's logo points.
+      if ("logoUrl" in body) {
+        const logoUrl = body.logoUrl == null || str(body.logoUrl).trim() === ""
+          ? null
+          : cleanUrl(str(body.logoUrl), 500);
+        await pool.query(`UPDATE issuance_coins SET logo_url = $1 WHERE id = $2`, [logoUrl, coin.id]);
+        out.logoUrl = logoUrl;
+        if (logoUrl) touchedUrls.push(logoUrl);
+      }
+
+      // Link-liveness verdicts for the URLs this PATCH just set:
+      // checked once, here at write time, and merged into the coin's
+      // stored map (link-check.ts). URLs that already carry a verdict
+      // are not re-checked; the write itself is never blocked by a
+      // verdict — a broken link simply earns no Legitimacy points.
+      if (touchedUrls.length > 0) {
+        const before = normalizeLinkStatus(coin.linkStatus);
+        const merged = await ensureLinkVerdicts(touchedUrls, before);
+        if (Object.keys(merged).length !== Object.keys(before).length) {
+          await pool.query(`UPDATE issuance_coins SET link_status = $1::jsonb WHERE id = $2`,
+            [JSON.stringify(merged), coin.id]);
+        }
+        out.linkStatus = merged;
       }
 
       sendJson(ctx.res, 200, { ...ENVELOPE, id: coin.id, ...out });
@@ -190,7 +238,7 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
       if (!filename) throw new HttpError(422, "invalid_filename", "filename is required.");
       const docType = str(body.docType).trim().toLowerCase() || "other";
       if (!DOC_TYPES.has(docType)) {
-        throw new HttpError(422, "invalid_doc_type", "docType must be 'business_license' or 'other'.");
+        throw new HttpError(422, "invalid_doc_type", "docType must be one of: " + [...DOC_TYPES].join(", ") + ".");
       }
       const mimeType = str(body.mimeType).trim().toLowerCase();
       if (!DOC_MIME_ALLOW.has(mimeType)) {

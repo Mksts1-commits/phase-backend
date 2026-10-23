@@ -126,14 +126,14 @@ async function main() {
     isMeme: true, name: "Alpha Coin", ticker: "ALP2", mintAddress: offerChainId,
     txSignature: offerChain.genesis_hash, supply: "100000", decimals: 6,
     priceUsd: 10, issuerAddress: buyerAddr, idempotencyKey: "coin-alp-2",
-    category: null, totalShares: 100000, retainedShares: 50000, websiteUrl: null,
+    category: null, totalShares: 100000, retainedShares: 50000, websiteUrl: null, logoUrl: null,
   });
   await issuance.storeCoin({
     draftId: "draft-bet2", userId: seller.userId, signatureId: "sig-bet2",
     isMeme: true, name: "Beta Coin", ticker: "BET2", mintAddress: targetChainId,
     txSignature: targetChain.genesis_hash, supply: "100000", decimals: 6,
     priceUsd: 20, issuerAddress: sellerAddr, idempotencyKey: "coin-bet-2",
-    category: null, totalShares: 100000, retainedShares: 50000, websiteUrl: null,
+    category: null, totalShares: 100000, retainedShares: 50000, websiteUrl: null, logoUrl: null,
   });
 
   // --- myCoins enrichment ---------------------------------------------------

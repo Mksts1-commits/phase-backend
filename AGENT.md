@@ -265,8 +265,8 @@ How to present it:
 
 Every issued coin has a **Legitimacy Score from 0 to 100**: the more
 real-world proof an issuer attaches to their coin — a signed agreement,
-a business license, connected socials, a reference URL, a funded
-wallet — the higher it climbs. Bands: **0–14 Meme Territory** ·
+license/ownership documents, connected socials, a reference URL, a
+funded wallet — the higher it climbs. Bands: **0–14 Meme Territory** ·
 15–39 Emerging · 40–64 Established · 65–79 Proven · **80–100 Phase
 Territory**. At 80+, the issuer's soft net worth graduates to actual
 net worth (`legitimacySummary.netWorthGraduated: true`).
@@ -274,7 +274,12 @@ net worth (`legitimacySummary.netWorthGraduated: true`).
 The score rides along in the dashboard payload: each `myCoins` entry
 has `legitimacy: { score, band, bandLabel, groups }`, where `groups`
 (Legal / Presence / Financial / Product) list every item with its
-`points`, `earned`, `done`, and a `hint` for what's missing.
+`points`, `earned`, `done`, a `hint` for what's missing, and a
+`status`: `"earned"` (done), `"available"` (earnable today — the user
+just hasn't done it), or `"coming_soon"` (the platform can't accept
+this proof yet — today that's the social-connection item while no
+social provider is configured on the platform). Treat a
+`coming_soon` item as platform-not-ready, never as user homework.
 
 How to use it:
 
@@ -286,14 +291,42 @@ How to use it:
   (profile edits, document uploads — with the confirmation script).
 - **Never promise points.** The score is computed by the server from
   real records only — a signed agreement on file, an actual deposit,
-  a document uploaded as a business license. There is no way to set
+  a document uploaded with the right type. There is no way to set
   or inflate it from the client, and saying "this will give you +12"
   before the record exists is a guess; say "this is the item that
   earns +12 once it's on file" instead.
-- Two items can't be earned yet because the product has no records
-  for them — bank linking (15) and a coin logo (4). If your user asks,
-  say they're on the checklist but not earnable today; don't invent a
-  workaround.
+- **Every item is earnable today.** The proof records behind the
+  less obvious items:
+  - **Legal identity (8)** needs BOTH the signed declaration (legal
+    name + issuer type on the signature) AND a government-issued ID
+    uploaded as a document (`docType: "government_id"`). Ask your
+    user for the ID document as part of completing their legal proof
+    set — the document trio is: license/ownership documents,
+    government ID, and bank statements/reports.
+  - **License / ownership documents (12)** is earned by the
+    registration or ownership proof that fits the coin's asset:
+    businesses → business license or registration
+    (`"business_license"` / `"business_registration"`); real estate
+    and rentals → deed, mortgage document, property tax record, or
+    lease (`"deed"` / `"mortgage_document"` / `"property_tax"` /
+    `"lease_agreement"`); collectables → certificate of
+    authenticity, appraisal, or provenance record
+    (`"certificate_of_authenticity"` / `"appraisal"` /
+    `"provenance_record"`). Any of them earns the item for any coin;
+    the category only changes which one you should ask for.
+  - **Bank statement or reports on file (15)** is documents, not a
+    live bank connection: a bank statement or financial report
+    uploaded as a document (`docType: "bank_statement"` or
+    `"financial_report"`).
+  - **Coin logo (4)**: set `logoUrl` — on the issuance draft before
+    minting, or later via the coin-profile PATCH — to an image URL
+    your user provides.
+- **Links are verified live.** The reference URL, social profile,
+  and logo points are earned only by links that actually work: the
+  platform checks each URL once (when it's set, or on first scoring
+  for older coins) and a dead link earns nothing — the item's hint
+  will say the link isn't working. Confirm a URL opens before you
+  submit it for your user.
 
 ## Browse the marketplace — agent view
 
@@ -322,14 +355,20 @@ asks for more.
 Your user can adjust Phase through you instead of the app. Allowed
 tweaks (all Bearer-authenticated, ownership-checked server-side):
 
-- **Edit their coin's profile** — tagline, website, social links:
-  `PATCH /api/v1/coins/:id` with `{ tagline?, websiteUrl?, socialProfiles? }`.
+- **Edit their coin's profile** — tagline, website, social links, logo:
+  `PATCH /api/v1/coins/:id` with `{ tagline?, websiteUrl?, socialProfiles?, logoUrl? }`.
+  `logoUrl` is an image URL (null clears it); it can also be set on
+  the issuance draft so the coin is minted with its logo.
   (Name, ticker, supply, price, and the value thesis are frozen at
   mint and cannot be edited.)
 - **Manage their coin's documents** — `POST /api/v1/coins/:id/documents`
-  (upload; pass `docType: "business_license"` when the file is their
-  business license or registration — that's what earns the Legitimacy
-  Score's business-license points), `DELETE
+  (upload; the `docType` decides what the document proves for the
+  Legitimacy Score: `"business_license"` / `"business_registration"`,
+  `"deed"` / `"mortgage_document"` / `"property_tax"` /
+  `"lease_agreement"`, or `"certificate_of_authenticity"` /
+  `"appraisal"` / `"provenance_record"` for the license/ownership
+  item; `"government_id"` for legal identity; `"bank_statement"` /
+  `"financial_report"` for the bank item), `DELETE
   /api/v1/coins/:id/documents/:docId` (remove).
 - **Watch / unwatch a coin** — `POST /api/v1/agent/watchlist`
   `{ coinId }`, `DELETE /api/v1/agent/watchlist/:coinId`. Both are

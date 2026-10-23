@@ -3,7 +3,9 @@
  *
  * A 0–100 rating per issued coin, computed SERVER-SIDE from real records
  * only: the signed Issuer Agreement, the signature's legal identity, a
- * business-license document on file, OAuth social connections, the coin's
+ * license/registration or ownership document on file (license for a
+ * business, deed/mortgage for real estate, authenticity/appraisal for
+ * collectables), OAuth social connections, the coin's
  * reference URL and listed social profiles, a confirmed funding deposit,
  * and a complete coin profile. The client can never claim points — this
  * module reads the same stores the rest of the backend writes, and any
@@ -14,12 +16,30 @@
  * "graduates": the dashboard's SOFT NET WORTH becomes NET WORTH
  * (legitimacySummary.netWorthGraduated).
  *
- * Two items have NO backing record anywhere in the backend today and
- * therefore always earn 0 until the product grows them:
- *   - bank_linked: no bank-linkage records exist server-side (Plaid was
- *     never integrated; the manual step lives outside this backend).
- *   - logo: coins have no logo/image field in any store.
- * They stay on the checklist so issuers see the full road to 100.
+ * The bank item is DOCUMENTARY, not a live bank connection (Mikyas's
+ * clarification, 2026-10-23): it is earned when a bank statement or
+ * financial report is on file for the coin — the same coin_documents
+ * store (and the same gather pattern) as the business license, keyed
+ * on the document's type. The logo item reads the coin's real logoUrl
+ * field (migration 024). Every rubric item is earnable from records
+ * that exist today.
+ *
+ * Legal identity takes two records: the signed declaration (legal
+ * name + issuer type on the signature) AND a government-issued ID
+ * document on file for the coin — a declaration nobody verified is
+ * only half the proof.
+ *
+ * URL-fed items (reference URL, social profiles, logo) are earned
+ * only by links that actually work (link-check.ts): verdicts are
+ * stored on the coin at write time, or computed once, lazily, on the
+ * first scored read for legacy coins and persisted. A broken link
+ * leaves the item unearned with its own hint.
+ *
+ * Each item view also carries a `status`: "earned" when done,
+ * "coming_soon" when the platform can't accept the proof yet, else
+ * "available". Today the only coming-soon case is social_connected
+ * while NO social OAuth provider is configured — issuers shouldn't be
+ * sent on homework the platform can't take.
  *
  * Wiring:
  *   - GET /api/v1/agent/dashboard (agent-interface.ts) embeds
@@ -39,7 +59,8 @@ import {
   type IssuanceDraft,
   type IssuanceSignature,
 } from "./issuance.js";
-import { listSocialConnections } from "./social-auth.js";
+import { listSocialConnections, anySocialProviderConfigured } from "./social-auth.js";
+import { ensureLinkVerdicts, normalizeLinkStatus } from "./link-check.js";
 import { checkRateLimit } from "./rate-limit.js";
 
 // ---------------------------------------------------------------------------
@@ -51,31 +72,72 @@ export type LegitimacyBandKey = "meme" | "emerging" | "established" | "proven" |
 
 export interface LegitimacyFacts {
   agreementSigned: boolean;
-  hasBusinessLicense: boolean;
+  /** A license/registration or ownership document is on file for
+   *  the coin — business license or registration for businesses; a
+   *  deed, mortgage document, property-tax record or lease for real
+   *  estate and rentals; a certificate of authenticity, appraisal or
+   *  provenance record for collectables (OWNERSHIP_DOCUMENT_TYPES). */
+  hasOwnershipDocument: boolean;
+  /** The coin's category. Steers the license/ownership item's HINT
+   *  only — earning accepts every qualifying document type for every
+   *  coin, whatever the category says. */
+  category: string | null;
+  /** Signed declaration: legal name + issuer type on the signature. */
   legalIdentityDeclared: boolean;
+  /** A government-issued ID document is on file for the coin. */
+  hasGovernmentId: boolean;
   socialConnected: boolean;
   referenceUrl: string | null;
+  /** The reference URL is set AND its stored verdict says broken. */
+  websiteUrlBroken: boolean;
+  /** Count of listed social profiles whose link is NOT broken. */
   socialProfileCount: number;
+  /** At least one social profile is listed (working or not). */
+  socialProfilesExist: boolean;
+  /** Documentary bank proof: a bank_statement or financial_report
+   *  document is on file for the coin (NOT a live bank connection). */
   bankLinked: boolean;
   walletFunded: boolean;
   tagline: string | null;
   valueThesis: string | null;
   hasLogo: boolean;
+  /** The logo URL is set AND its stored verdict says broken. */
+  logoBroken: boolean;
 }
 
 export const EMPTY_LEGITIMACY_FACTS: LegitimacyFacts = {
   agreementSigned: false,
-  hasBusinessLicense: false,
+  hasOwnershipDocument: false,
+  category: null,
   legalIdentityDeclared: false,
+  hasGovernmentId: false,
   socialConnected: false,
   referenceUrl: null,
+  websiteUrlBroken: false,
   socialProfileCount: 0,
+  socialProfilesExist: false,
   bankLinked: false,
   walletFunded: false,
   tagline: null,
   valueThesis: null,
   hasLogo: false,
+  logoBroken: false,
 };
+
+/** Platform context the scorer needs for honest availability: whether
+ *  a capability is switched on at all. Not user data — deployment state. */
+export interface LegitimacyContext {
+  /** At least one social OAuth provider has credentials configured. */
+  socialProviderConfigured: boolean;
+}
+
+const DEFAULT_LEGITIMACY_CONTEXT: LegitimacyContext = {
+  socialProviderConfigured: true,
+};
+
+/** Shown instead of the "not added yet" hint when a link exists but
+ *  its verdict is broken — a dead link earns nothing. */
+export const BROKEN_LINK_HINT = "Your link isn't working — update it to earn these points.";
 
 interface RubricItem {
   key: string;
@@ -83,7 +145,15 @@ interface RubricItem {
   label: string;
   points: number;
   hint: string;
+  /** Fact-dependent hint (e.g. a link exists but is broken; a legal
+   *  declaration exists but the ID document is missing). Falls back
+   *  to the static `hint` when absent. */
+  hintFor?: (f: LegitimacyFacts) => string;
   earned: (f: LegitimacyFacts) => boolean;
+  /** When this returns true the item cannot be earned right now no
+   *  matter what the issuer does — it renders as "coming soon" rather
+   *  than as homework. Only for platform-side gaps. */
+  comingSoon?: (ctx: LegitimacyContext) => boolean;
 }
 
 const GROUP_LABELS: Record<LegitimacyGroupKey, string> = {
@@ -105,39 +175,70 @@ export const LEGITIMACY_RUBRIC: RubricItem[] = [
     earned: (f) => f.agreementSigned,
   },
   {
+    // Key stays "business_license" (payloads and the app reference
+    // it); the item is asset-aware: ANY qualifying registration or
+    // ownership document earns it, and the hint follows the coin's
+    // category — deed/mortgage for real estate and rentals,
+    // authenticity/appraisal/provenance for collectables, license or
+    // registration otherwise.
     key: "business_license", group: "legal", points: 12,
-    label: "Business license on file",
+    label: "License / ownership documents on file",
     hint: "Upload your business license or registration in the coin's Documentation & Compliance section (document type: business license).",
-    earned: (f) => f.hasBusinessLicense,
+    hintFor: (f) => {
+      switch (ownershipHintFlavor(f.category)) {
+        case "real_estate":
+          return "Upload your deed, mortgage document, or related ownership record in the coin's Documentation & Compliance section.";
+        case "collectables":
+          return "Upload a certificate of authenticity, appraisal, or provenance record in the coin's Documentation & Compliance section.";
+        default:
+          return "Upload your business license or registration in the coin's Documentation & Compliance section (document type: business license).";
+      }
+    },
+    earned: (f) => f.hasOwnershipDocument,
   },
   {
     key: "legal_identity", group: "legal", points: 8,
     label: "Legal identity declared",
     hint: "Sign with your legal name and declare your issuer type (individual or entity).",
-    earned: (f) => f.legalIdentityDeclared,
+    // The declaration alone is half the proof: a government-issued ID
+    // document on file for the coin verifies the name that was signed.
+    hintFor: (f) => f.legalIdentityDeclared
+      ? "Add a government-issued ID to verify your legal name."
+      : "Sign with your legal name and declare your issuer type (individual or entity).",
+    earned: (f) => f.legalIdentityDeclared && f.hasGovernmentId,
   },
   {
     key: "social_connected", group: "presence", points: 12,
     label: "Social account connected",
     hint: "Connect TikTok, YouTube, or Instagram to your Phase account.",
     earned: (f) => f.socialConnected,
+    comingSoon: (ctx) => !ctx.socialProviderConfigured,
   },
   {
     key: "reference_url", group: "presence", points: 7,
     label: "Reference URL added",
     hint: "Add your website or a reference link to the coin profile.",
-    earned: (f) => nonEmpty(f.referenceUrl),
+    hintFor: (f) => f.websiteUrlBroken
+      ? BROKEN_LINK_HINT
+      : "Add your website or a reference link to the coin profile.",
+    earned: (f) => nonEmpty(f.referenceUrl) && !f.websiteUrlBroken,
   },
   {
     key: "social_profile", group: "presence", points: 6,
     label: "Social profile linked",
     hint: "List at least one social profile link on the coin.",
+    hintFor: (f) => f.socialProfileCount === 0 && f.socialProfilesExist
+      ? BROKEN_LINK_HINT
+      : "List at least one social profile link on the coin.",
     earned: (f) => f.socialProfileCount > 0,
   },
   {
+    // Key stays "bank_linked" (payloads and the app reference it); the
+    // item is documentary — a bank statement or financial report on
+    // file for the coin, NOT a live bank connection.
     key: "bank_linked", group: "financial", points: 15,
-    label: "Bank account linked",
-    hint: "Link a bank account to your Phase profile (bank linking is not available yet).",
+    label: "Bank statement or reports on file",
+    hint: "Upload a bank statement or financial report in the coin's Documentation & Compliance section (document type: bank statement or financial report).",
     earned: (f) => f.bankLinked,
   },
   {
@@ -155,8 +256,11 @@ export const LEGITIMACY_RUBRIC: RubricItem[] = [
   {
     key: "logo", group: "product", points: 4,
     label: "Coin logo set",
-    hint: "Set a logo image for your coin (coin logos are not supported yet).",
-    earned: (f) => f.hasLogo,
+    hint: "Set a logo image URL for your coin — on the draft before minting, or in the coin profile afterwards.",
+    hintFor: (f) => f.logoBroken
+      ? BROKEN_LINK_HINT
+      : "Set a logo image URL for your coin — on the draft before minting, or in the coin profile afterwards.",
+    earned: (f) => f.hasLogo && !f.logoBroken,
   },
 ];
 
@@ -168,12 +272,20 @@ export function bandForScore(score: number): { band: LegitimacyBandKey; bandLabe
   return { band: "meme", bandLabel: "Meme Territory" };
 }
 
+/** Per-item availability, so a UI can tell "you haven't done this"
+ *  (available) from "the platform can't take this yet" (coming_soon):
+ *  - "earned": the record exists; points are in the score.
+ *  - "available": earnable today; the issuer just hasn't done it.
+ *  - "coming_soon": not earnable today for platform reasons. */
+export type LegitimacyItemStatus = "earned" | "available" | "coming_soon";
+
 export interface LegitimacyItemView {
   key: string;
   label: string;
   points: number;
   earned: number;
   done: boolean;
+  status: LegitimacyItemStatus;
   hint: string;
 }
 export interface LegitimacyGroupView {
@@ -188,8 +300,13 @@ export interface LegitimacyScore {
   groups: LegitimacyGroupView[];
 }
 
-/** Pure scorer: facts in, display-ready score out. Deterministic. */
-export function scoreLegitimacy(facts: LegitimacyFacts): LegitimacyScore {
+/** Pure scorer: facts in, display-ready score out. Deterministic.
+ *  The optional context only drives each item's availability `status`;
+ *  it never changes points. */
+export function scoreLegitimacy(
+  facts: LegitimacyFacts,
+  context: LegitimacyContext = DEFAULT_LEGITIMACY_CONTEXT
+): LegitimacyScore {
   let score = 0;
   const byGroup = new Map<LegitimacyGroupKey, LegitimacyItemView[]>();
   for (const g of GROUP_ORDER) byGroup.set(g, []);
@@ -197,13 +314,19 @@ export function scoreLegitimacy(facts: LegitimacyFacts): LegitimacyScore {
     const done = item.earned(facts);
     const earned = done ? item.points : 0;
     score += earned;
+    const status: LegitimacyItemStatus = done
+      ? "earned"
+      : item.comingSoon?.(context)
+        ? "coming_soon"
+        : "available";
     byGroup.get(item.group)!.push({
       key: item.key,
       label: item.label,
       points: item.points,
       earned,
       done,
-      hint: item.hint,
+      status,
+      hint: item.hintFor ? item.hintFor(facts) : item.hint,
     });
   }
   const { band, bandLabel } = bandForScore(score);
@@ -245,6 +368,7 @@ export function summarizeLegitimacy(
 interface UserFacts {
   socialConnected: boolean;
   walletFunded: boolean;
+  socialProviderConfigured: boolean;
 }
 
 async function gatherUserFacts(userId: string): Promise<UserFacts> {
@@ -252,6 +376,13 @@ async function gatherUserFacts(userId: string): Promise<UserFacts> {
   try {
     socialConnected = (await listSocialConnections(userId)).length > 0;
   } catch { /* social store unavailable — not earned */ }
+
+  // Deployment state, not user data: is ANY social OAuth provider
+  // configured? Drives social_connected's availability status only.
+  let socialProviderConfigured = false;
+  try {
+    socialProviderConfigured = anySocialProviderConfigured();
+  } catch { /* treat as unconfigured — the item shows coming soon */ }
 
   let walletFunded = false;
   try {
@@ -268,17 +399,60 @@ async function gatherUserFacts(userId: string): Promise<UserFacts> {
     walletFunded = r.rows.length > 0;
   } catch { /* no funding ledger reachable — not earned */ }
 
-  return { socialConnected, walletFunded };
+  return { socialConnected, walletFunded, socialProviderConfigured };
 }
 
-async function coinHasBusinessLicense(coinId: string): Promise<boolean> {
+/** Document types that earn the license/ownership item
+ *  (coin-edit.ts DOC_TYPES): registration or ownership proof for any
+ *  asset class — business, real estate/rental, collectables. ANY of
+ *  them earns the item for ANY coin; the coin's category only steers
+ *  the hint, never blocks earning. */
+export const OWNERSHIP_DOCUMENT_TYPES = [
+  "business_license", "business_registration",
+  "deed", "mortgage_document", "property_tax", "lease_agreement",
+  "certificate_of_authenticity", "appraisal", "provenance_record",
+] as const;
+
+/** Pure predicate over a coin's document types: any qualifying
+ *  license/registration or ownership document on file earns the
+ *  license/ownership item. */
+export function hasOwnershipDocument(docTypes: readonly string[]): boolean {
+  return docTypes.some((t) => (OWNERSHIP_DOCUMENT_TYPES as readonly string[]).includes(t));
+}
+
+/** Which document menu a coin's category points at. Category is free
+ *  text on the draft/coin ("Real Estate", "smallBusiness",
+ *  "Collectibles", …), so this is a keyword read, not an enum —
+ *  anything unrecognized falls back to the business menu. */
+export function ownershipHintFlavor(
+  category: string | null | undefined
+): "real_estate" | "collectables" | "business" {
+  const c = (category ?? "").toLowerCase();
+  if (/real[\s_-]?estate|realty|propert|rental|housing|land|mortgage/.test(c)) return "real_estate";
+  if (/collect|antique|memorabilia|rare|wine|artwork|fine[\s_-]?art/.test(c)) return "collectables";
+  return "business";
+}
+
+/** Document types that earn the bank item (coin-edit.ts DOC_TYPES). */
+export const BANK_DOCUMENT_TYPES = ["bank_statement", "financial_report"] as const;
+
+/** Pure predicate over a coin's document types: a bank statement or a
+ *  financial report on file earns the bank item. */
+export function hasBankDocument(docTypes: readonly string[]): boolean {
+  return docTypes.some((t) => (BANK_DOCUMENT_TYPES as readonly string[]).includes(t));
+}
+
+/** The distinct document types on file for a coin (coin_documents —
+ *  the Documentation & Compliance store). Empty when the store is
+ *  unavailable, so document items degrade to "not earned". */
+async function coinDocumentTypes(coinId: string): Promise<string[]> {
   try {
     const r = await getPool().query(
-      `SELECT 1 FROM coin_documents WHERE coin_id = $1 AND doc_type = 'business_license' LIMIT 1`,
+      `SELECT DISTINCT doc_type AS "docType" FROM coin_documents WHERE coin_id = $1`,
       [coinId]
     );
-    return r.rows.length > 0;
-  } catch { /* documents store unavailable — not earned */ return false; }
+    return r.rows.map((row: { docType: unknown }) => String(row.docType));
+  } catch { /* documents store unavailable — not earned */ return []; }
 }
 
 function draftSocialProfiles(draft: IssuanceDraft | null): Array<{ platform: string; url: string }> {
@@ -313,20 +487,48 @@ export async function factsForCoin(
     nonEmpty(signature.legalName) &&
     (signature.issuerCategory === "individual" || signature.issuerCategory === "entity");
 
+  const docTypes = await coinDocumentTypes(coin.id);
+
+  // Link verdicts live on the coin (written at draft/PATCH/mint time).
+  // A legacy coin can carry URLs with no verdict yet — check those
+  // once, here, and persist the merged map, so no URL is re-checked
+  // on later reads.
+  const websiteUrl = coin.websiteUrl ?? draft?.websiteUrl ?? null;
+  const profileUrls = profiles.map((p) => p.url);
+  const storedVerdicts = normalizeLinkStatus(coin.linkStatus);
+  const verdicts = await ensureLinkVerdicts(
+    [websiteUrl, coin.logoUrl, ...profileUrls],
+    storedVerdicts
+  );
+  if (Object.keys(verdicts).length !== Object.keys(storedVerdicts).length) {
+    await issuance.updateCoinLinkStatus(coin.id, verdicts).catch(() => {});
+  }
+  const isBroken = (url: string | null): boolean =>
+    !!url && verdicts[url]?.verdict === "broken";
+
   return {
     agreementSigned: !!signature,
-    hasBusinessLicense: await coinHasBusinessLicense(coin.id),
+    hasOwnershipDocument: hasOwnershipDocument(docTypes),
+    category: coin.category ?? draft?.category ?? null,
     legalIdentityDeclared,
+    hasGovernmentId: docTypes.includes("government_id"),
     socialConnected: userFacts.socialConnected,
-    referenceUrl: coin.websiteUrl ?? draft?.websiteUrl ?? null,
-    socialProfileCount: profiles.length,
-    // No bank-linkage records exist server-side — never earnable today.
-    bankLinked: false,
+    referenceUrl: websiteUrl,
+    websiteUrlBroken: isBroken(websiteUrl),
+    // Only profiles whose link works count toward the item.
+    socialProfileCount: profiles.filter((p) => !isBroken(p.url)).length,
+    socialProfilesExist: profiles.length > 0,
+    // Documentary, not a live link: a bank statement or financial
+    // report document on file for the coin earns this (same store and
+    // pattern as the business license, above).
+    bankLinked: hasBankDocument(docTypes),
     walletFunded: userFacts.walletFunded,
     tagline: draft?.tagline ?? null,
     valueThesis: draft?.valueThesis ?? null,
-    // Coins have no logo field in any store — never earnable today.
-    hasLogo: false,
+    // The coin's real logo field (migration 024): set on the draft and
+    // carried to the coin at mint, or later via PATCH logoUrl.
+    hasLogo: nonEmpty(coin.logoUrl),
+    logoBroken: isBroken(coin.logoUrl),
   };
 }
 
@@ -338,9 +540,12 @@ export async function computeLegitimacyForCoins(
   const out = new Map<string, LegitimacyScore>();
   if (coins.length === 0) return out;
   const userFacts = await gatherUserFacts(userId);
+  const context: LegitimacyContext = {
+    socialProviderConfigured: userFacts.socialProviderConfigured,
+  };
   for (const coin of coins) {
     const facts = await factsForCoin(coin, userFacts);
-    out.set(coin.id, scoreLegitimacy(facts));
+    out.set(coin.id, scoreLegitimacy(facts, context));
   }
   return out;
 }

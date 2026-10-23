@@ -1686,6 +1686,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
           issuerAddress: c.issuerAddress ?? null,
           socialProfiles,
           websiteUrl: c.websiteUrl ?? null,
+          logoUrl: c.logoUrl ?? null,
           createdAt: c.createdAt,
           floatAvailable,
           online: true,

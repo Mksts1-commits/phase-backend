@@ -107,19 +107,19 @@ async function main() {
     draftId: "draft-alp", userId: buyer, signatureId: "sig-alp",
     isMeme: true, name: "Alpha Coin", ticker: "ALP1", mintAddress: offerChainId,
     txSignature: offerChain.genesis_hash, supply: "100000", decimals: 6,
-    priceUsd: 10, issuerAddress: buyerAddr, idempotencyKey: "coin-alp-1",
+    priceUsd: 10, issuerAddress: buyerAddr, idempotencyKey: "coin-alp-1", logoUrl: null,
   });
   const targetCoin = await issuance.storeCoin({
     draftId: "draft-bet", userId: seller, signatureId: "sig-bet",
     isMeme: true, name: "Beta Coin", ticker: "BET1", mintAddress: targetChainId,
     txSignature: targetChain.genesis_hash, supply: "100000", decimals: 6,
-    priceUsd: 20, issuerAddress: sellerAddr, idempotencyKey: "coin-bet-1",
+    priceUsd: 20, issuerAddress: sellerAddr, idempotencyKey: "coin-bet-1", logoUrl: null,
   });
   await issuance.storeCoin({
     draftId: "draft-gam", userId: seller, signatureId: "sig-gam",
     isMeme: true, name: "Gamma Coin", ticker: "GAM1", mintAddress: gammaChainId,
     txSignature: gammaChain.genesis_hash, supply: "100000", decimals: 6,
-    priceUsd: 5, issuerAddress: sellerAddr, idempotencyKey: "coin-gam-1",
+    priceUsd: 5, issuerAddress: sellerAddr, idempotencyKey: "coin-gam-1", logoUrl: null,
   });
   ok("target coin has issuerAddress", targetCoin.issuerAddress === sellerAddr);
 

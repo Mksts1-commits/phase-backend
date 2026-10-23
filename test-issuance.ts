@@ -134,12 +134,12 @@ check("coins list ok (empty, nothing minted)", res.statusCode === 200 && Array.i
 // --- 6. renderAgreementText determinism ------------------------------------------
 const t1 = renderAgreementText(res.body.coins.length === 0 ? {
   id: "d", userId: UID, name: "A", ticker: "AAA", category: "", tagline: "",
-  valueThesis: "V", equityPublic: 60, equityRetained: 40, socialProfiles: [],
+  valueThesis: "V", equityPublic: 60, equityRetained: 40, socialProfiles: [], logoUrl: null, linkStatus: {},
   status: "draft", createdAt: "", updatedAt: "",
 } : null as never);
 check("agreement text deterministic", t1 === renderAgreementText({
   id: "d", userId: UID, name: "A", ticker: "AAA", category: "", tagline: "",
-  valueThesis: "V", equityPublic: 60, equityRetained: 40, socialProfiles: [],
+  valueThesis: "V", equityPublic: 60, equityRetained: 40, socialProfiles: [], logoUrl: null, linkStatus: {},
   status: "draft", createdAt: "", updatedAt: "",
 }));
 

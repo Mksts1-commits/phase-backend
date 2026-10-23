@@ -180,6 +180,7 @@ interface CoinCard {
   issuerAddress: string | null;
   socialProfiles: Array<{ platform: string; url: string }>;
   websiteUrl: string | null;
+  logoUrl: string | null;
   createdAt: string;
   online: boolean;
   display: { price: string; marketCap: string; headline: string };
@@ -230,6 +231,7 @@ async function coinCard(c: IssuanceCoin): Promise<CoinCard> {
     issuerAddress: c.issuerAddress ?? null,
     socialProfiles,
     websiteUrl: c.websiteUrl ?? null,
+    logoUrl: c.logoUrl ?? null,
     createdAt: c.createdAt,
     online: true,
     display: {

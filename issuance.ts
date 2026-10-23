@@ -17,6 +17,7 @@ import { createChain, LedgerError, getChainBalance, PUBLIC_FLOAT_ADDRESS } from 
 import { getPool } from "./db.js";
 import { resolveBearerUserId } from "./auth.js";
 import { checkRateLimit } from "./rate-limit.js";
+import { ensureLinkVerdicts, normalizeLinkStatus, type LinkStatusMap } from "./link-check.js";
 
 // ---------------------------------------------------------------------------
 // Canonical issuer agreement text.
@@ -43,6 +44,10 @@ export interface IssuanceDraftInput {
   equityRetained?: number;
   socialProfiles?: Array<{ platform: string; url: string }>;
   websiteUrl?: string;
+  /** Logo image URL for the coin (migration 024). Flows to the coin at
+   *  mint; also settable afterwards via PATCH /api/v1/coins/:id. Earns
+   *  the Legitimacy Score's logo points once set on the coin. */
+  logoUrl?: string;
   priceUsd?: number; // issuer's starting price per whole coin, USD
   /** Total shares to mint. Fixed on the draft BEFORE the agreement is
    *  signed, so the agreement prints the real supply and mint must match
@@ -52,7 +57,7 @@ export interface IssuanceDraftInput {
   totalShares?: number | null;
 }
 
-export interface IssuanceDraft extends Required<Omit<IssuanceDraftInput, "category" | "tagline" | "valueThesis" | "equityPublic" | "equityRetained" | "socialProfiles" | "websiteUrl" | "priceUsd" | "totalShares">> {
+export interface IssuanceDraft extends Required<Omit<IssuanceDraftInput, "category" | "tagline" | "valueThesis" | "equityPublic" | "equityRetained" | "socialProfiles" | "websiteUrl" | "logoUrl" | "priceUsd" | "totalShares">> {
   id: string;
   category: string;
   tagline: string;
@@ -61,6 +66,13 @@ export interface IssuanceDraft extends Required<Omit<IssuanceDraftInput, "catego
   equityRetained: number;
   socialProfiles: Array<{ platform: string; url: string }>;
   websiteUrl: string | null;
+  /** Logo image URL chosen at draft time; copied onto the coin at mint.
+   *  Null when the issuer hasn't set one (or on drafts that predate it). */
+  logoUrl: string | null;
+  /** Link-liveness verdicts for this draft's URLs (website, logo,
+   *  social profiles), keyed by URL — see link-check.ts. Written once
+   *  at draft creation; carried onto the coin at mint. */
+  linkStatus: LinkStatusMap;
   priceUsd: number; // issuer's starting price per whole coin, USD
   /** Supply fixed at draft time (see IssuanceDraftInput). Null on legacy
    *  drafts that predate the field — those keep the old mint-time supply
@@ -114,6 +126,13 @@ export interface IssuanceCoin {
   retainedShares: number | null;
   /** Issuer's website URL (business/asset listings). Null if not provided. */
   websiteUrl: string | null;
+  /** Coin logo image URL (migration 024): copied from the draft at mint,
+   *  editable afterwards via PATCH /api/v1/coins/:id. Null if unset. */
+  logoUrl: string | null;
+  /** Link-liveness verdicts for the coin's URLs (website, logo, social
+   *  profiles), keyed by URL — see link-check.ts / migration 025. A
+   *  stored verdict is never re-checked on read. */
+  linkStatus: LinkStatusMap;
   network: "sovereign";
   idempotencyKey: string;
   createdAt: string;
@@ -225,7 +244,7 @@ export function sha256Hex(s: string): string {
 
 export interface IssuanceStore {
   ensureUser(userId: string, email?: string): Promise<void>;
-  createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt">): Promise<IssuanceDraft>;
+  createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceDraft>;
   getDraft(id: string): Promise<IssuanceDraft | null>;
   getDraftByIdempotency(key: string): Promise<IssuanceDraft | null>;
   setDraftStatus(id: string, status: IssuanceDraft["status"]): Promise<void>;
@@ -236,7 +255,10 @@ export interface IssuanceStore {
   getCoinByIdempotency(key: string): Promise<IssuanceCoin | null>;
   getCoinByDraft(draftId: string): Promise<IssuanceCoin | null>;
   getCoinByChainId(chainId: string): Promise<IssuanceCoin | null>;
-  storeCoin(c: Omit<IssuanceCoin, "id" | "createdAt" | "network">): Promise<IssuanceCoin>;
+  storeCoin(c: Omit<IssuanceCoin, "id" | "createdAt" | "network" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceCoin>;
+  /** Persist the coin's link-verdict map (lazy score-time checks write
+   *  their verdicts back so each URL is checked at most once). */
+  updateCoinLinkStatus(coinId: string, linkStatus: LinkStatusMap): Promise<void>;
   listCoinsByUser(userId: string): Promise<IssuanceCoin[]>;
   /** Every issued coin, newest first — powers the public marketplace directory. */
   listAllCoins(): Promise<IssuanceCoin[]>;
@@ -256,24 +278,26 @@ class PgIssuanceStore implements IssuanceStore {
     );
   }
 
-  async createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt">): Promise<IssuanceDraft> {
+  async createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceDraft> {
     const id = randomUUID();
     const rows = await this.q<IssuanceDraft>(
       `INSERT INTO issuance_drafts
          (id, user_id, name, ticker, category, tagline, value_thesis, equity_public,
-          equity_retained, social_profiles, website_url, price_usd, total_shares, status, idempotency_key)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'draft',$14)
+          equity_retained, social_profiles, website_url, logo_url, link_status, price_usd, total_shares, status, idempotency_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,'draft',$16)
        RETURNING id, user_id AS "userId", name, ticker, category, tagline,
                  value_thesis AS "valueThesis", equity_public AS "equityPublic",
                  equity_retained AS "equityRetained",
                  social_profiles AS "socialProfiles", website_url AS "websiteUrl",
+                 logo_url AS "logoUrl", link_status AS "linkStatus",
                  price_usd AS "priceUsd", total_shares::float8 AS "totalShares",
                  status,
                  created_at AS "createdAt", updated_at AS "updatedAt",
                  idempotency_key AS "idempotencyKey"`,
       [id, d.userId, d.name, d.ticker, d.category, d.tagline, d.valueThesis,
        d.equityPublic, d.equityRetained, JSON.stringify(d.socialProfiles),
-       d.websiteUrl ?? null, d.priceUsd, d.totalShares ?? null, d.idempotencyKey ?? null]
+       d.websiteUrl ?? null, d.logoUrl ?? null, JSON.stringify(d.linkStatus ?? {}),
+       d.priceUsd, d.totalShares ?? null, d.idempotencyKey ?? null]
     );
     return rows[0]!;
   }
@@ -284,6 +308,7 @@ class PgIssuanceStore implements IssuanceStore {
               value_thesis AS "valueThesis", equity_public AS "equityPublic",
               equity_retained AS "equityRetained",
               social_profiles AS "socialProfiles", website_url AS "websiteUrl",
+              logo_url AS "logoUrl", link_status AS "linkStatus",
               price_usd AS "priceUsd", total_shares::float8 AS "totalShares",
               status,
               created_at AS "createdAt", updated_at AS "updatedAt",
@@ -300,6 +325,7 @@ class PgIssuanceStore implements IssuanceStore {
               value_thesis AS "valueThesis", equity_public AS "equityPublic",
               equity_retained AS "equityRetained",
               social_profiles AS "socialProfiles", website_url AS "websiteUrl",
+              logo_url AS "logoUrl", link_status AS "linkStatus",
               price_usd AS "priceUsd", total_shares::float8 AS "totalShares",
               status,
               created_at AS "createdAt", updated_at AS "updatedAt",
@@ -384,24 +410,30 @@ class PgIssuanceStore implements IssuanceStore {
     return rows[0] ?? null;
   }
 
-  async storeCoin(c: Omit<IssuanceCoin, "id" | "createdAt" | "network">): Promise<IssuanceCoin> {
+  async storeCoin(c: Omit<IssuanceCoin, "id" | "createdAt" | "network" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceCoin> {
     const id = randomUUID();
     const rows = await this.q<IssuanceCoin>(
       `INSERT INTO issuance_coins
          (id, draft_id, user_id, signature_id, is_meme, name, ticker,
           mint_address, tx_signature, supply, decimals, price_usd, issuer_address,
-          category, total_shares, retained_shares, website_url, network, idempotency_key)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'sovereign',$18)
+          category, total_shares, retained_shares, website_url, logo_url, link_status, network, idempotency_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,'sovereign',$20)
        ON CONFLICT (idempotency_key) DO NOTHING
        RETURNING ${COIN_COLS}`,
       [id, c.draftId, c.userId, c.signatureId, c.isMeme, c.name, c.ticker,
        c.mintAddress, c.txSignature, c.supply, c.decimals, c.priceUsd, c.issuerAddress ?? null,
-       c.category ?? null, c.totalShares ?? null, c.retainedShares ?? null, c.websiteUrl ?? null, c.idempotencyKey]
+       c.category ?? null, c.totalShares ?? null, c.retainedShares ?? null, c.websiteUrl ?? null,
+       c.logoUrl ?? null, JSON.stringify(c.linkStatus ?? {}), c.idempotencyKey]
     );
     // Lost the race: another request with the same key already stored a coin.
     const existing = await this.getCoinByIdempotency(c.idempotencyKey);
     if (!existing) throw new Error("idempotency conflict without existing coin");
     return existing;
+  }
+
+  async updateCoinLinkStatus(coinId: string, linkStatus: LinkStatusMap): Promise<void> {
+    await this.q(`UPDATE issuance_coins SET link_status = $1::jsonb WHERE id = $2`,
+      [JSON.stringify(linkStatus), coinId]);
   }
 
   async listCoinsByUser(userId: string): Promise<IssuanceCoin[]> {
@@ -423,7 +455,7 @@ const COIN_COLS = `id, draft_id AS "draftId", user_id AS "userId",
   mint_address AS "mintAddress", tx_signature AS "txSignature",
   supply, decimals, price_usd AS "priceUsd", issuer_address AS "issuerAddress",
   category, total_shares AS "totalShares", retained_shares AS "retainedShares",
-  website_url AS "websiteUrl",
+  website_url AS "websiteUrl", logo_url AS "logoUrl", link_status AS "linkStatus",
   network, idempotency_key AS "idempotencyKey",
   created_at AS "createdAt"`;
 
@@ -439,9 +471,9 @@ class MemoryIssuanceStore implements IssuanceStore {
   async ensureUser(userId: string, email?: string): Promise<void> {
     if (!this.users.has(userId)) this.users.set(userId, { email });
   }
-  async createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt">): Promise<IssuanceDraft> {
+  async createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceDraft> {
     const now = new Date().toISOString();
-    const draft: IssuanceDraft = { ...d, id: randomUUID(), status: "draft", createdAt: now, updatedAt: now };
+    const draft: IssuanceDraft = { ...d, linkStatus: d.linkStatus ?? {}, id: randomUUID(), status: "draft", createdAt: now, updatedAt: now };
     this.drafts.set(draft.id, draft);
     if (draft.idempotencyKey) this.draftsByKey.set(draft.idempotencyKey, draft);
     return draft;
@@ -483,13 +515,17 @@ class MemoryIssuanceStore implements IssuanceStore {
     for (const c of this.coins.values()) if (c.mintAddress === chainId) return c;
     return null;
   }
-  async storeCoin(c: Omit<IssuanceCoin, "id" | "createdAt" | "network">): Promise<IssuanceCoin> {
+  async storeCoin(c: Omit<IssuanceCoin, "id" | "createdAt" | "network" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceCoin> {
     const existing = this.coinsByKey.get(c.idempotencyKey);
     if (existing) return existing;
-    const coin: IssuanceCoin = { ...c, network: "sovereign", id: randomUUID(), createdAt: new Date().toISOString() };
+    const coin: IssuanceCoin = { ...c, linkStatus: c.linkStatus ?? {}, network: "sovereign", id: randomUUID(), createdAt: new Date().toISOString() };
     this.coins.set(coin.id, coin);
     this.coinsByKey.set(coin.idempotencyKey, coin);
     return coin;
+  }
+  async updateCoinLinkStatus(coinId: string, linkStatus: LinkStatusMap): Promise<void> {
+    const coin = this.coins.get(coinId);
+    if (coin) coin.linkStatus = linkStatus;
   }
   async listCoinsByUser(userId: string): Promise<IssuanceCoin[]> {
     return [...this.coins.values()].filter((c) => c.userId === userId)
@@ -720,6 +756,16 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         totalShares = deriveDraftTotalShares(priceUsd);
       }
 
+      const websiteUrl = str(body.websiteUrl ?? body.website_url).trim().slice(0, 500) || null;
+      const logoUrl = str(body.logoUrl ?? body.logo_url).trim().slice(0, 500) || null;
+      // Link-liveness verdicts are computed ONCE, here at write time,
+      // and stored on the draft (link-check.ts). The verdicts travel
+      // to the coin at mint; the scorer never re-checks a stored URL.
+      const linkStatus = await ensureLinkVerdicts(
+        [websiteUrl, logoUrl, ...socialProfiles.map((p) => p.url)],
+        null
+      );
+
       await s.ensureUser(userId, str(body.email) || undefined);
       const draft = await s.createDraft({
         userId,
@@ -731,7 +777,9 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         equityPublic,
         equityRetained,
         socialProfiles,
-        websiteUrl: str(body.websiteUrl ?? body.website_url).trim().slice(0, 500) || null,
+        websiteUrl,
+        logoUrl,
+        linkStatus,
         priceUsd,
         totalShares,
         idempotencyKey: draftIdemKey,
@@ -925,6 +973,13 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         covenant_hash: agreementHash,
       });
 
+      // The coin inherits the draft's link verdicts; any URL without
+      // one (legacy drafts) is checked now, once, at mint.
+      const coinLinkStatus = await ensureLinkVerdicts(
+        [draft.websiteUrl, draft.logoUrl, ...(draft.socialProfiles ?? []).map((p) => p.url)],
+        normalizeLinkStatus(draft.linkStatus)
+      );
+
       const coin = await s.storeCoin({
         draftId,
         userId,
@@ -942,6 +997,8 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         totalShares,
         retainedShares: Math.round((totalShares * draft.equityRetained) / 100),
         websiteUrl: draft.websiteUrl || null,
+        logoUrl: draft.logoUrl || null,
+        linkStatus: coinLinkStatus,
         idempotencyKey: key,
       });
       await s.setDraftStatus(draftId, "minted");

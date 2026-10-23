@@ -368,6 +368,14 @@ const PROVIDERS: Record<SocialProvider, ProviderConfig> = {
   instagram: instagramConfig,
 };
 
+/** True when at least one provider has its OAuth credentials set, i.e.
+ *  a user could actually connect a social account right now. Read by
+ *  the Legitimacy Score: its social_connected item is "coming soon"
+ *  while no provider is configured. */
+export function anySocialProviderConfigured(): boolean {
+  return Object.values(PROVIDERS).some((p) => p.configured);
+}
+
 // ---------------------------------------------------------------------------
 // PKCE helpers
 // ---------------------------------------------------------------------------

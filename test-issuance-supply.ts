@@ -175,7 +175,7 @@ async function main() {
   const legacy = await store.createDraft({
     userId: bob.userId, name: "Legacy Coin", ticker: "LEG1", category: "",
     tagline: "", valueThesis: "Pre-supply-field draft.", equityPublic: 5,
-    equityRetained: 95, socialProfiles: [], websiteUrl: null, priceUsd: 0.25,
+    equityRetained: 95, socialProfiles: [], websiteUrl: null, logoUrl: null, priceUsd: 0.25,
     totalShares: null, idempotencyKey: null,
   });
   r = await agreement(bob.token, legacy.id);
