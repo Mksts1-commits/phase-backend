@@ -42,9 +42,9 @@ but keep every field and keep it this short):
 >
 > 1. **Coin name** — your brand, business, or idea
 > 2. **Ticker** — 3–5 letters, or say "suggest one"
-> 3. **What is it, in one line?** — your shop, your music, your community…
-> 4. **Your email** — for your Phase account (you also get 1,000 PHASE free)
-> 5. **A link that shows it's you** — website or social profile (optional, but it raises your coin's Phase Cred)
+> 3. **What's it for, in one line?** — your shop, your music, your community — or just "making people smile"
+> 4. **Your email** — for your Phase account (we'll email you a confirmation code; you also get 1,000 PHASE free)
+> 5. **A link that shows it's you** — website or social profile (optional)
 > 6. **Your legal name** — for the Issuer Agreement you'll approve before anything mints
 >
 > Standard setup unless you say otherwise: $0.50 starting price, $100K
@@ -58,10 +58,10 @@ it with filler). Never send a second questionnaire. Only the email is
 required to start; the legal name is required before signing (step 4) —
 if it's still missing there, ask once, there.
 
-These basics are also the coin's head start: a real legal name on the
-agreement, a reference link that works, and a real one-line thesis are
-exactly what keeps a new coin out of Meme territory (see "Red flags"
-below). If your user asks why you need them, that's the one-line answer.
+Each basic does a job later: the legal name goes on the Issuer
+Agreement, the email opens the account, and the link and the one-liner
+become the coin's public listing. If your user asks why you need them,
+that's the one-line answer.
 
 **Defaults — use these unless your user says otherwise:** the issuer
 retains **95%** (`equityRetained: 95`, `equityPublic: 5`), the price is
@@ -73,6 +73,13 @@ creating the draft — the agreement they sign prints exactly these
 numbers.
 
 ## The flow (6 API calls)
+
+**Style for the whole flow:** keep every message short — a few lines,
+like a text message. No walls of text, no raw JSON, no lectures. The
+only long thing you ever show is the Issuer Agreement itself (step 4),
+because it's a legal document. Do not mention Phase Cred, scores,
+bands, or red flags during signup and minting — that language belongs
+to dashboard and marketplace conversations (later sections).
 
 ### 1. Sign up
 
@@ -86,6 +93,22 @@ Content-Type: application/json
 → `201` with `{ token, phaseBalance, signupBonusGranted }`.
 Save the token. **Hand the email + password to your user** — it's their
 account, not yours. Do not retain credentials longer than needed.
+
+Right after signup, the backend emails the user a confirmation code.
+Tell them in ONE line: "Sent a confirmation code to your email — drop
+it here when it lands and I'll confirm you; we can keep going
+meanwhile." When they give you the code, confirm it:
+
+```
+POST /api/v1/auth/verify-email
+Content-Type: application/json
+
+{ "token": "<code>" }
+```
+
+Never block the flow waiting for the code — signup, drafting, and
+minting all work without it. If they ask for a fresh code:
+`POST /api/v1/auth/resend-verification` (Bearer token required).
 
 If the account already exists (`409 account_exists`), ask your user to log in
 instead: `POST /api/v1/auth/login` with email + password.
@@ -163,6 +186,26 @@ Content-Type: application/json
 
 → `201` with `{ signatureId }`. (`issuerCategory` defaults to
 `"individual"`; use `"entity"` for companies.)
+
+**Before you mint — recap everything and wait for a "go."** Signing is
+done, but minting is irreversible, so send one short recap of ALL the
+inputs and wait for an explicit go before calling mint (keep this
+shape; fill it from the actual draft, not the defaults, when they
+differ):
+
+> Quick confirm before I mint:
+> • Coin: <name> (<ticker>)
+> • For: <their one-liner>
+> • Price $0.50 · Market cap $100K · Supply 200,000
+> • You keep 95% · Public float 5%
+> • Link: <reference URL or "none">
+> • Signed by: <legal name>
+> Reply "go" and I'll mint it.
+
+Mint only after the go. The recap is the human checkpoint; the
+Idempotency-Key in step 5 is the machine one. If they want a change
+instead, go back to step 3 — a changed draft means a new agreement to
+sign.
 
 ### 5. Mint — this provisions the sovereign chain
 
@@ -273,7 +316,7 @@ issued coins with live positions), `recentActivity`, `openOffers`
 `quickActions` you can offer next.
 
 Each `myCoins` entry also carries a `legitimacy` object — the coin's
-Legitimacy Score (see the next section) — and the payload a top-level
+Phase Cred (see the next section) — and the payload a top-level
 `legitimacySummary`: `{ bestScore, bestCoinTicker,
 netWorthGraduated }` across your user's coins.
 
@@ -362,6 +405,9 @@ How to use it:
   submit it for your user.
 
 ### Red flags — an automatic cap at Meme
+
+*Internal guidance only — never raise this with your user during
+signup or minting.*
 
 Points are not the whole story. A coin carrying **any one red flag**
 is capped in Meme Territory (effective score at most 14) no matter

@@ -47,6 +47,19 @@ function parseFrom(from: string): { name?: string; email: string } {
   return { email: from.trim() };
 }
 
+export type MailSender = (opts: MailOptions) => Promise<boolean>;
+
+let activeSender: MailSender = sendViaSendGrid;
+
+/**
+ * Test seam — same injection pattern as link-check's setLinkFetcher and
+ * email-domain-check's setEmailDomainResolver. Pass null to restore the
+ * real SendGrid transport. Production code never calls this.
+ */
+export function setMailSender(sender: MailSender | null): void {
+  activeSender = sender ?? sendViaSendGrid;
+}
+
 /**
  * Send one transactional email. Resolves true when SendGrid accepts it
  * (HTTP 202), false when mail is not configured. Rejects on API errors —
@@ -54,6 +67,10 @@ function parseFrom(from: string): { name?: string; email: string } {
  * API key.
  */
 export async function sendMail(opts: MailOptions): Promise<boolean> {
+  return activeSender(opts);
+}
+
+async function sendViaSendGrid(opts: MailOptions): Promise<boolean> {
   const cfg = mailConfig();
   if (!cfg) {
     console.warn("[mailer] SENDGRID_API_KEY not set — email not sent", { to: opts.to, subject: opts.subject });
@@ -116,6 +133,30 @@ export function passwordResetEmail(to: string, token: string): MailOptions {
     `<div style="font-family: ui-monospace, monospace; font-size: 15px; background: #f2f7f3; border: 1px solid #d7e8db; border-radius: 8px; padding: 14px 16px; word-break: break-all; margin: 12px 0;">${escapeHtml(token)}</div>` +
     `<p>In the Phase app: go to the login screen, tap <strong>Forgot password</strong>, paste the code, and choose a new password.</p>` +
     `<p style="color: #666; font-size: 13px;">If you didn't ask for this, you can safely ignore this email — your password stays exactly as it is.</p>` +
+    `<p style="color: #999; font-size: 12px; margin-top: 24px;">— The Phase team</p>` +
+    `</div>`;
+  return { to, subject, text, html };
+}
+
+export function verificationEmail(to: string, token: string): MailOptions {
+  const subject = "Confirm your Phase email";
+  const text =
+    `Hi there,\n\n` +
+    `Welcome to Phase — one quick step to confirm this email address (${to}) is really yours.\n\n` +
+    `Your confirmation code (valid for 24 hours):\n\n    ${token}\n\n` +
+    `Paste the code back wherever you signed up (your agent or the Phase app) and you're confirmed.\n\n` +
+    `If you didn't sign up for Phase, you can safely ignore this email — ` +
+    `no account will be confirmed.\n\n` +
+    `— The Phase team`;
+  const html =
+    `<div style="font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #1a1a1a;">` +
+    `<div style="font-size: 22px; font-weight: 700; margin-bottom: 4px;">Phase</div>` +
+    `<div style="height: 3px; width: 56px; background: ${PHASE_GREEN}; border-radius: 2px; margin: 8px 0 20px;"></div>` +
+    `<p>Welcome to Phase — one quick step to confirm this email address (<strong>${escapeHtml(to)}</strong>) is really yours.</p>` +
+    `<p>Your confirmation code (valid for <strong>24 hours</strong>):</p>` +
+    `<div style="font-family: ui-monospace, monospace; font-size: 15px; background: #f2f7f3; border: 1px solid #d7e8db; border-radius: 8px; padding: 14px 16px; word-break: break-all; margin: 12px 0;">${escapeHtml(token)}</div>` +
+    `<p>Paste the code back wherever you signed up (your agent or the Phase app) and you're confirmed.</p>` +
+    `<p style="color: #666; font-size: 13px;">If you didn't sign up for Phase, you can safely ignore this email — no account will be confirmed.</p>` +
     `<p style="color: #999; font-size: 12px; margin-top: 24px;">— The Phase team</p>` +
     `</div>`;
   return { to, subject, text, html };

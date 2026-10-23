@@ -23,7 +23,7 @@ import { randomUUID, randomBytes, scryptSync, timingSafeEqual, createHash } from
 import { getPool } from "./db.js";
 import { checkRateLimit, clientIpFromHeaders } from "./rate-limit.js";
 import { auditLog } from "./sovereign-ledger-core.js";
-import { sendMail, passwordResetEmail } from "./mailer.js";
+import { sendMail, passwordResetEmail, verificationEmail } from "./mailer.js";
 import { grantSignupBonus, getPhaseBalance } from "./bonus.js";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -503,6 +503,20 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
     name: acc.name,
   });
 
+  // Fire-and-forget verification email (same delivery pattern as the
+  // password-reset send): a mail failure is logged server-side only and
+  // must never fail the request that triggered it. The token itself is
+  // never logged — only the user id and whether SendGrid accepted it.
+  const queueVerificationEmail = (userId: string, email: string, token: string): void => {
+    sendMail(verificationEmail(email, token))
+      .then((sent) => {
+        console.log(`[auth] verification email queued for user ${userId} (sent: ${sent})`);
+      })
+      .catch((err) => {
+        console.error("[auth] verification email failed:", (err as Error)?.message ?? err);
+      });
+  };
+
   // --- POST /api/v1/auth/signup ---
   route("POST", "/api/v1/auth/signup", async (ctx) => {
     try {
@@ -547,15 +561,15 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       // Signup bonus: 1000 PHASE from the fixed bonus pool (idempotent per
       // user; silently skipped when the pool is exhausted).
       const bonusGranted = await grantSignupBonus(account.id).catch(() => false);
-      // Generate email verification token. TODO: send via email; for now it
-      // is only logged server-side and NEVER returned in the API response.
+      // Email verification: mint the token and actually email it. The
+      // token is NEVER returned in the API response and never logged.
       const verificationToken = await s.createEmailVerificationToken(account.id);
-      console.log(`[auth] email verification token for ${account.id}: ${verificationToken} (TODO: email this)`);
+      queueVerificationEmail(account.id, account.email, verificationToken);
       sendJson(ctx.res, 201, {
         ...accountPayload(account),
         token: session.token,
         expiresAt: session.expiresAt,
-        emailVerified: false,
+        emailVerified: await s.isEmailVerified(account.id).catch(() => false),
         phaseBalance: await getPhaseBalance(account.id).catch(() => 0),
         signupBonusGranted: bonusGranted,
       });
@@ -591,7 +605,7 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       await s.recordLoginAttempt(email, ip, true);
       const session = await s.createSession(account.id);
       await auditLog(account.id, "login_success", "issuance_users", account.id, {});
-      sendJson(ctx.res, 200, { ...accountPayload(account), token: session.token, expiresAt: session.expiresAt, phaseBalance: await getPhaseBalance(account.id).catch(() => 0) });
+      sendJson(ctx.res, 200, { ...accountPayload(account), token: session.token, expiresAt: session.expiresAt, emailVerified: await s.isEmailVerified(account.id).catch(() => false), phaseBalance: await getPhaseBalance(account.id).catch(() => 0) });
     } catch (err) { fail(ctx, err); }
   });
 
@@ -733,8 +747,9 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
         return;
       }
       const token = await s.createEmailVerificationToken(userId);
-      // TODO: send via email; for now only logged server-side, NEVER returned.
-      console.log(`[auth] email verification token for user ${userId}: ${token} (TODO: email this)`);
+      // Email the fresh token (never returned in the response, never logged).
+      const account = await s.findById(userId);
+      if (account) queueVerificationEmail(userId, account.email, token);
       sendJson(ctx.res, 200, { ok: true, message: "If an account exists for this email, a verification token was generated." });
     } catch (err) { fail(ctx, err); }
   });
