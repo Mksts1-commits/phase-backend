@@ -337,7 +337,7 @@ How to present it:
 - Everything is test-mode. Balances and prices are Phase test rails,
   not real-money value — frame them that way.
 
-## Legitimacy Score — help your user climb
+## Phase Cred — help your user climb
 
 Every issued coin has a **Legitimacy Score from 0 to 100**: the more
 real-world proof an issuer attaches to their coin — a signed agreement,
