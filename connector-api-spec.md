@@ -71,3 +71,159 @@ legal review before real money or real instruments move.
 3. Implement this spec against the existing BFF modules (securities, funding, guide)
 4. Legal sign-off on agent-initiated issuance/trading (extends the Sep 28 review)
 5. Submit connector, iterate on review
+
+---
+
+# Addendum — The Agent Interface (2026-10-23, implemented)
+
+Status update: the backend is live at `https://phase-backend.onrender.com`
+and account auth shipped — email+password accounts with server-side
+Bearer session tokens (`POST /api/v1/auth/signup` / `login`). Until the
+OAuth flow lands for the formal connector submission, agent traffic
+authenticates with that Bearer token; the scope model below maps 1:1
+onto the OAuth scopes in the table above. All endpoints in this
+addendum are implemented in `agent-interface.ts` (plus pre-existing
+routes they compose) and carry `"mode": "test"` — Phase rails are
+test-mode; no payload here is a real-money claim.
+
+Product premise: **the agent is the full interface to Phase**, not just
+the signup+mint funnel. A user can view their dashboard, browse the
+marketplace, and tweak their account through their agent, from inside
+their AI chat.
+
+## A. Dashboard visual payload
+
+`GET /api/v1/agent/dashboard` — Bearer required. The userId comes ONLY
+from the token; a `userId` in query/body is never read.
+
+Returns ONE render-ready JSON document the agent presents as the
+user's interactive dashboard visual:
+
+```jsonc
+{
+  "network": "sovereign", "chain": "phase", "mode": "test",
+  "view": "dashboard",
+  "generatedAt": "2026-10-23T12:00:00.000Z",
+  "partial": false,               // true when a section degraded
+  "summary": "1,000 PHASE · $0.00 USD · 1 coin issued · 1 swap offer waiting for your decision.",
+  "account": { "userId": "…", "email": "user@example.com", "name": "User" },
+  "balances": { "PHASE": 1000, "USD": "0.000000", "lifetimeSalesUsd": "0.000000" },
+  "myCoins": [{
+    "id": "…", "chainId": "…", "name": "Creator Coin", "ticker": "CRT",
+    "category": "Creator", "tagline": "For my community",
+    "priceUsd": 2.5, "supply": "100000", "marketCapUsd": 250000,
+    "floatAvailable": "50000", "hasAgreement": true,
+    "display": { "price": "$2.50", "marketCap": "$250,000.00",
+                 "headline": "Creator Coin (CRT) — For my community" },
+    "position": {
+      "availableUnits": "50000",            // issuer's live on-chain stake
+      "publicFloatUnits": "50000",
+      "publicFloatSoldUnits": "0",
+      "realizationRatio": 0,                // share of float actually bought
+      "stakeValueUsdAtList": 125000         // at LIST price — not market value
+    }
+  }],
+  "recentActivity": [{ "id": "…", "kind": "buy", "role": "seller",
+    "units": "10.000000", "amountUsd": "25.000000", "createdAt": "…",
+    "summary": "Sold 10.000000 units for $25.00" }],
+  "openOffers": {
+    "inbox":  [{ "id": "…", "status": "pending", "needsMyDecision": true,
+                 "summary": "Offer: 20 BYR for 9 CRT of yours." }],
+    "outbox": []
+  },
+  "watchlist": [ /* coin cards, same shape as marketplace */ ],
+  "quickActions": [
+    { "id": "browse_marketplace", "label": "Browse the marketplace",
+      "method": "GET", "path": "/api/v1/agent/marketplace" },
+    { "id": "edit_my_coin", "label": "Edit my coin's profile (tagline, website, socials)",
+      "method": "PATCH", "path": "/api/v1/coins/:id", "requiresConfirmation": true }
+  ]
+}
+```
+
+Sections degrade independently: if one subsystem is unavailable the
+document still returns with that section empty/null and `partial: true`.
+Agents should present `summary` first, then the sections the user
+asked about, and must keep the listing-vs-realized distinction visible
+(`stakeValueUsdAtList` is a list-price figure; `realizationRatio` is
+what actually sold).
+
+## B. Marketplace visual payload
+
+`GET /api/v1/agent/marketplace` — public; Bearer optional.
+Query: `search` (name/ticker/tagline substring), `category`
+(case-insensitive exact), `limit` (1–50, default 20), `cursor`
+(opaque offset from `nextCursor`).
+
+Built on the same data path as `GET /api/v1/marketplace/coins` (which
+remains the raw directory), reshaped for agent presentation:
+
+```jsonc
+{
+  "view": "marketplace", "mode": "test", "total": 35,
+  "categories": [{ "name": "Creator", "count": 12 }],
+  "coins": [{
+    "id": "…", "chainId": "…", "name": "Creator Coin", "ticker": "CRT",
+    "category": "Creator", "tagline": "…", "valueThesis": "…",
+    "priceUsd": 2.5, "supply": "100000", "marketCapUsd": 250000,
+    "floatAvailable": "50000", "isMeme": false, "hasAgreement": true,
+    "issuerUserId": "…", "issuerAddress": "ph1…",
+    "socialProfiles": [{ "platform": "tiktok", "url": "https://…" }],
+    "websiteUrl": null, "createdAt": "…", "online": true,
+    "display": { "price": "$2.50", "marketCap": "$250,000.00", "headline": "…" },
+    "mine": false, "watchlisted": true   // only when Bearer present
+  }],
+  "nextCursor": "20"
+}
+```
+
+## C. Tweak / write actions
+
+All writes are Bearer-authenticated, ownership-checked server-side,
+and — by protocol rule (§E) — require the user's explicit confirmation
+in the conversation before the agent calls them.
+
+| Action | Endpoint | Scope | Idempotency |
+|---|---|---|---|
+| Edit my coin's tagline / website / socials | `PATCH /api/v1/coins/:id` | `write:coin-profile` | Naturally idempotent (field set) |
+| Upload / delete my coin's documents | `POST` / `DELETE /api/v1/coins/:id/documents[/:docId]` | `write:coin-profile` | Upload: count-capped; delete: 404 on replay |
+| Watch a coin | `POST /api/v1/agent/watchlist` `{ coinId }` (id or chainId) | `write:watchlist` | Idempotent — re-add returns 200 `alreadyWatching: true` |
+| Unwatch a coin | `DELETE /api/v1/agent/watchlist/:coinId` | `write:watchlist` | Idempotent — always 200 |
+| Cancel my open swap offer | `POST /api/v1/offers/:id/cancel` | `write:offers` | Status-guarded — replay returns 409 `offer_not_open` |
+| Create / accept / counter / decline offers | `POST /api/v1/offers`, `/:id/accept`, `/:id/counter`, `/:id/decline` | `write:offers` | `Idempotency-Key` on create; status-guarded decisions |
+| Draft / sign / mint a coin | `POST /api/v1/issuance/draft`, `/sign`, `/mint` | `write:listings` | `Idempotency-Key` required on mint |
+| Buy / swap | `POST /api/v1/trades/buy`, `/trades/swap` | `write:orders` | `Idempotency-Key` |
+
+New scopes for the connector manifest: `read:dashboard` (covers §A),
+`read:marketplace` (public; no scope needed unauthenticated),
+`write:coin-profile`, `write:watchlist`, `write:offers`.
+
+Watchlist storage: `user_watchlist` table (migration 021).
+
+## D. Presentation conventions for agents
+
+- Lead with the payload's `summary` line; render coin collections as
+  compact cards (headline, price, market cap, float available), not
+  raw JSON dumps.
+- When a payload says `partial: true`, tell the user some figures
+  couldn't be loaded rather than presenting the view as complete.
+- Surface `needsMyDecision: true` offers first — they are the only
+  dashboard items that block another person.
+- Always keep list price vs. realized value distinct (see §A).
+
+## E. Consent conventions (hard rules)
+
+- **No silent writes.** Before any §C call, the agent states exactly
+  what will change (field, old → new; or the action and its target)
+  and gets the user's explicit yes in the conversation. Only then does
+  it call. This extends the existing Issuer-Agreement rule: signing
+  already requires showing the full text and explicit acceptance.
+- **Confirmation is conversational, not a body flag** — the server
+  enforces auth + ownership; the agent enforces consent. An agent that
+  cannot obtain a clear yes must not call the write.
+- **Report back.** After a write, the agent shows the server's result
+  (e.g. the updated card, the cancelled offer's status) so the user
+  can verify the change landed.
+- **Honesty.** All payloads are test-mode. Never present balances,
+  prices, or stake values as real-money value, and never promise
+  returns.

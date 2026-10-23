@@ -131,7 +131,7 @@ const OFFER_COLS = `id, target_chain_id AS "targetChainId", target_coin_id AS "t
   fee_bps AS "feeBps", status, idempotency_key AS "idempotencyKey",
   trade_id AS "tradeId", created_at AS "createdAt", updated_at AS "updatedAt", decided_at AS "decidedAt"`;
 
-interface OffersStore {
+export interface OffersStore {
   create(o: Omit<SwapOffer, "id" | "createdAt" | "updatedAt" | "decidedAt" | "tradeId" | "counterOfferUnits" | "counterRequestUnits" | "targetTicker" | "targetName" | "targetPriceUsd" | "offerTicker" | "offerName" | "offerPriceUsd">): Promise<SwapOffer>;
   getById(id: string): Promise<SwapOffer | null>;
   getByIdempotency(key: string): Promise<SwapOffer | null>;
@@ -287,6 +287,9 @@ async function getStoreAsync(): Promise<OffersStore> {
   }
   return storeInstance;
 }
+
+/** Shared accessor for other route modules (agent-interface.ts). */
+export { getStoreAsync as getOffersStore };
 
 /** Attach coin display fields to an offer (best effort — never fails the request). */
 async function withCoinDisplay(offer: SwapOffer): Promise<SwapOffer> {

@@ -182,6 +182,93 @@ for them — investigate first. The marketplace gives you everything public:
 Recommend, don't push. Lay out what you found — the numbers, the documents,
 the gaps — and let your user decide.
 
+## See your dashboard
+
+Your user doesn't need the app to see where they stand — you can show
+them. Fetch their dashboard visual:
+
+```
+GET /api/v1/agent/dashboard
+Authorization: Bearer <token>
+```
+
+→ `200` with one render-ready document: `summary` (a one-line
+overview), `balances` (PHASE + USD + lifetime sales), `myCoins` (their
+issued coins with live positions), `recentActivity`, `openOffers`
+(swap offers, split into `inbox`/`outbox`), `watchlist`, and
+`quickActions` you can offer next.
+
+How to present it:
+
+- **Lead with the `summary` line**, then the sections your user asked
+  about. Render coins as compact cards using each coin's `display`
+  strings (`headline`, `price`, `marketCap`) — don't dump raw JSON.
+- **Surface decisions first.** Any offer with `needsMyDecision: true`
+  is blocking someone else — call it out before trivia.
+- **Keep list price and realized value separate.** A coin's
+  `position.stakeValueUsdAtList` values the issuer's stake at the
+  *listing* price. `position.realizationRatio` says how much of the
+  public float has actually been bought. If it's 0, say plainly that
+  nothing has sold yet — never present the list figure as money earned.
+- If the payload says `partial: true`, tell your user some figures
+  couldn't be loaded instead of presenting the view as complete.
+- Everything is test-mode. Balances and prices are Phase test rails,
+  not real-money value — frame them that way.
+
+## Browse the marketplace — agent view
+
+The raw directory (`GET /api/v1/marketplace/coins`, above) works, but
+for browsing *with* your user, prefer the presentation-shaped view:
+
+```
+GET /api/v1/agent/marketplace?search=<text>&category=<name>&limit=20&cursor=<nextCursor>
+```
+
+Public — no account needed. Send the Bearer token anyway when you have
+one: cards then carry `mine` and `watchlisted` flags for your user.
+
+→ `200` with `{ total, categories: [{ name, count }], coins: [...],
+nextCursor }`. Each coin is a card: name, ticker, category, tagline,
+value thesis, price, market cap, float still available, issuer socials
+and website, plus `display` strings ready to show.
+
+Present a short shortlist — headline, price, market cap, float
+available — and follow the due-diligence rules above before saying
+anything evaluative about a coin. Page with `cursor` only if your user
+asks for more.
+
+## Tweak things for your user
+
+Your user can adjust Phase through you instead of the app. Allowed
+tweaks (all Bearer-authenticated, ownership-checked server-side):
+
+- **Edit their coin's profile** — tagline, website, social links:
+  `PATCH /api/v1/coins/:id` with `{ tagline?, websiteUrl?, socialProfiles? }`.
+  (Name, ticker, supply, price, and the value thesis are frozen at
+  mint and cannot be edited.)
+- **Manage their coin's documents** — `POST /api/v1/coins/:id/documents`
+  (upload), `DELETE /api/v1/coins/:id/documents/:docId` (remove).
+- **Watch / unwatch a coin** — `POST /api/v1/agent/watchlist`
+  `{ coinId }`, `DELETE /api/v1/agent/watchlist/:coinId`. Both are
+  idempotent; re-adding returns `alreadyWatching: true`.
+- **Cancel their own open swap offer** — `POST /api/v1/offers/:id/cancel`.
+  Only the buyer can cancel; to refuse an offer sent *to* your user,
+  decline it instead (`POST /api/v1/offers/:id/decline`).
+
+**The confirmation script — mandatory for every tweak:**
+
+1. State exactly what will change: the action, the target, and for
+   edits the field with its old → new values.
+2. Ask for an explicit yes. ("Change your tagline from '…' to '…'?
+   Say yes and I'll do it.")
+3. Only on a clear yes, make the call.
+4. Report back with the server's result so your user can verify the
+   change landed (show the updated field or new status).
+
+Never tweak silently, never batch unconfirmed changes, and never treat
+an ambiguous reply as a yes. If your user says no — or doesn't answer —
+nothing gets called.
+
 ## Rules for agents
 
 - **Never sign the Issuer Agreement without the user's explicit, informed

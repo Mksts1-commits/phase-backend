@@ -67,6 +67,7 @@ import { mountBridgePublicRoutes } from "./bridge-public.js";
 import { mountBridgeRoutes } from "./bridge.js";
 import { mountMarketplaceRoutes } from "./marketplace.js";
 import { mountOffersRoutes } from "./offers.js";
+import { mountAgentInterfaceRoutes } from "./agent-interface.js";
 import { mountAdminRoutes } from "./admin.js";
 import { mountLegalDocsRoutes } from "./legal-docs.js";
 import { mountSocialRoutes } from "./social-auth.js";
@@ -1155,6 +1156,11 @@ mountMarketplaceRoutes({ route, sendJson, HttpError });
 // Buyer proposes units of their own coin for NET units of a target coin;
 // the seller accepts, counters, or declines from their dashboard.
 mountOffersRoutes({ route, sendJson, HttpError });
+
+// --- 8e-vii-c. Agent interface (see agent-interface.ts) ---
+// The agent is the full interface: dashboard + marketplace visual
+// payloads, watchlist, and offer cancel. Bearer-only userId throughout.
+mountAgentInterfaceRoutes({ route, sendJson, HttpError });
 
 // --- 8e-vii-a. Admin API: fee config, treasury, withdrawals, reconciliation
 // (see admin.ts). Admin-only endpoints; bootstrap via PHASE_ADMIN_EMAILS or

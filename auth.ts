@@ -556,7 +556,7 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
         token: session.token,
         expiresAt: session.expiresAt,
         emailVerified: false,
-        phaseBalance: await getPhaseBalance(account.id),
+        phaseBalance: await getPhaseBalance(account.id).catch(() => 0),
         signupBonusGranted: bonusGranted,
       });
     } catch (err) { fail(ctx, err); }
@@ -591,7 +591,7 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       await s.recordLoginAttempt(email, ip, true);
       const session = await s.createSession(account.id);
       await auditLog(account.id, "login_success", "issuance_users", account.id, {});
-      sendJson(ctx.res, 200, { ...accountPayload(account), token: session.token, expiresAt: session.expiresAt, phaseBalance: await getPhaseBalance(account.id) });
+      sendJson(ctx.res, 200, { ...accountPayload(account), token: session.token, expiresAt: session.expiresAt, phaseBalance: await getPhaseBalance(account.id).catch(() => 0) });
     } catch (err) { fail(ctx, err); }
   });
 
@@ -607,7 +607,7 @@ export function mountAuthRoutes(deps: AuthMountDeps): void {
       if (!session) throw new HttpError(401, "invalid_session", "Session expired or invalid — please log in again.");
       const account = await s.findById(session.userId);
       if (!account) throw new HttpError(401, "invalid_session", "Account no longer exists.");
-      sendJson(ctx.res, 200, { ...accountPayload(account), phaseBalance: await getPhaseBalance(account.id) });
+      sendJson(ctx.res, 200, { ...accountPayload(account), phaseBalance: await getPhaseBalance(account.id).catch(() => 0) });
     } catch (err) { fail(ctx, err); }
   });
 
