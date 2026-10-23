@@ -68,6 +68,7 @@ import { mountBridgeRoutes } from "./bridge.js";
 import { mountMarketplaceRoutes } from "./marketplace.js";
 import { mountOffersRoutes } from "./offers.js";
 import { mountAgentInterfaceRoutes } from "./agent-interface.js";
+import { mountLegitimacyRoutes } from "./legitimacy.js";
 import { mountAdminRoutes } from "./admin.js";
 import { mountLegalDocsRoutes } from "./legal-docs.js";
 import { mountSocialRoutes } from "./social-auth.js";
@@ -1161,6 +1162,12 @@ mountOffersRoutes({ route, sendJson, HttpError });
 // The agent is the full interface: dashboard + marketplace visual
 // payloads, watchlist, and offer cancel. Bearer-only userId throughout.
 mountAgentInterfaceRoutes({ route, sendJson, HttpError });
+
+// --- 8e-vii-d. Legitimacy Score (see legitimacy.ts) ---
+// GET /api/v1/legitimacy/me — the web app's per-coin legitimacy view on
+// the same Bearer session; the scorer is also embedded in the agent
+// dashboard above. Server-computed from real records only.
+mountLegitimacyRoutes({ route, sendJson, HttpError });
 
 // --- 8e-vii-a. Admin API: fee config, treasury, withdrawals, reconciliation
 // (see admin.ts). Admin-only endpoints; bootstrap via PHASE_ADMIN_EMAILS or

@@ -239,6 +239,11 @@ issued coins with live positions), `recentActivity`, `openOffers`
 (swap offers, split into `inbox`/`outbox`), `watchlist`, and
 `quickActions` you can offer next.
 
+Each `myCoins` entry also carries a `legitimacy` object — the coin's
+Legitimacy Score (see the next section) — and the payload a top-level
+`legitimacySummary`: `{ bestScore, bestCoinTicker,
+netWorthGraduated }` across your user's coins.
+
 How to present it:
 
 - **Lead with the `summary` line**, then the sections your user asked
@@ -255,6 +260,40 @@ How to present it:
   couldn't be loaded instead of presenting the view as complete.
 - Everything is test-mode. Balances and prices are Phase test rails,
   not real-money value — frame them that way.
+
+## Legitimacy Score — help your user climb
+
+Every issued coin has a **Legitimacy Score from 0 to 100**: the more
+real-world proof an issuer attaches to their coin — a signed agreement,
+a business license, connected socials, a reference URL, a funded
+wallet — the higher it climbs. Bands: **0–14 Meme Territory** ·
+15–39 Emerging · 40–64 Established · 65–79 Proven · **80–100 Phase
+Territory**. At 80+, the issuer's soft net worth graduates to actual
+net worth (`legitimacySummary.netWorthGraduated: true`).
+
+The score rides along in the dashboard payload: each `myCoins` entry
+has `legitimacy: { score, band, bandLabel, groups }`, where `groups`
+(Legal / Presence / Financial / Product) list every item with its
+`points`, `earned`, `done`, and a `hint` for what's missing.
+
+How to use it:
+
+- **Show your user their score and band** when you present their
+  dashboard — lead with the best coin (`legitimacySummary`).
+- **Turn the missing items into next steps.** Read the `done: false`
+  items as a checklist ("Add a reference URL · +7", "Connect a social
+  account · +12") and offer to do the ones you can do through the API
+  (profile edits, document uploads — with the confirmation script).
+- **Never promise points.** The score is computed by the server from
+  real records only — a signed agreement on file, an actual deposit,
+  a document uploaded as a business license. There is no way to set
+  or inflate it from the client, and saying "this will give you +12"
+  before the record exists is a guess; say "this is the item that
+  earns +12 once it's on file" instead.
+- Two items can't be earned yet because the product has no records
+  for them — bank linking (15) and a coin logo (4). If your user asks,
+  say they're on the checklist but not earnable today; don't invent a
+  workaround.
 
 ## Browse the marketplace — agent view
 
@@ -288,7 +327,10 @@ tweaks (all Bearer-authenticated, ownership-checked server-side):
   (Name, ticker, supply, price, and the value thesis are frozen at
   mint and cannot be edited.)
 - **Manage their coin's documents** — `POST /api/v1/coins/:id/documents`
-  (upload), `DELETE /api/v1/coins/:id/documents/:docId` (remove).
+  (upload; pass `docType: "business_license"` when the file is their
+  business license or registration — that's what earns the Legitimacy
+  Score's business-license points), `DELETE
+  /api/v1/coins/:id/documents/:docId` (remove).
 - **Watch / unwatch a coin** — `POST /api/v1/agent/watchlist`
   `{ coinId }`, `DELETE /api/v1/agent/watchlist/:coinId`. Both are
   idempotent; re-adding returns `alreadyWatching: true`.

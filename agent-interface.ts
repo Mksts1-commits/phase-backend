@@ -9,6 +9,9 @@
  *          document an agent can present as the user's interactive
  *          dashboard visual: balances, my coins with live positions,
  *          recent activity, open swap offers, watchlist, quick actions.
+ *          Each coin carries its Legitimacy Score (legitimacy.ts) and
+ *          the payload a top-level legitimacySummary (best score +
+ *          net-worth graduation at 80+).
  *   GET    /api/v1/agent/marketplace  (public; Bearer optional) —
  *          the marketplace shaped for agent presentation: coin cards
  *          with display-ready strings, search/category filters, cursor
@@ -42,6 +45,13 @@ import { getMarketStore, type MarketTrade } from "./marketplace.js";
 import { getOffersStore, type SwapOffer } from "./offers.js";
 import { getChainBalance, PUBLIC_FLOAT_ADDRESS, auditLog } from "./sovereign-ledger-core.js";
 import { checkRateLimit, clientIpFromHeaders } from "./rate-limit.js";
+import {
+  computeLegitimacyForCoins,
+  scoreLegitimacy,
+  summarizeLegitimacy,
+  EMPTY_LEGITIMACY_FACTS,
+  type LegitimacyScore,
+} from "./legitimacy.js";
 
 export interface AgentInterfaceMountDeps {
   route: (method: string, path: string, handler: (ctx: any) => void | Promise<void>) => void;
@@ -360,7 +370,7 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
       const lifetimeSalesUsd = await section(() => market.lifetimeSalesUsd(userId), null as string | null);
 
       const myCoinsRaw = await section(() => issuance.listCoinsByUser(userId), [] as IssuanceCoin[]);
-      const myCoins = await Promise.all(myCoinsRaw.map(async (c) => {
+      const myCoinsBase = await Promise.all(myCoinsRaw.map(async (c) => {
         const card = await coinCard(c);
         const position = coinPosition(c);
         return {
@@ -375,6 +385,20 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
           },
         };
       }));
+
+      // Legitimacy Score (legitimacy.ts): server-computed from real
+      // records only. Degrades to a zero score per coin, never an error.
+      const legitimacyByCoin = await section(
+        () => computeLegitimacyForCoins(userId, myCoinsRaw),
+        new Map<string, LegitimacyScore>()
+      );
+      const myCoins = myCoinsBase.map((c) => ({
+        ...c,
+        legitimacy: legitimacyByCoin.get(c.id) ?? scoreLegitimacy(EMPTY_LEGITIMACY_FACTS),
+      }));
+      const legitimacySummary = summarizeLegitimacy(
+        myCoins.map((c) => ({ ticker: c.ticker, legitimacy: c.legitimacy }))
+      );
 
       const recentActivity = await section(async () => {
         const [asBuyer, asSeller] = await Promise.all([
@@ -461,6 +485,7 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
         account,
         balances: { PHASE: phaseBalance, USD: usdBalance, lifetimeSalesUsd },
         myCoins,
+        legitimacySummary,
         recentActivity,
         openOffers: offers,
         watchlist,

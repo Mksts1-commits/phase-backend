@@ -8,7 +8,9 @@
  *   they were frozen at mint and, for the thesis, signed in the
  *   minting agreement.
  *
- * POST /api/v1/coins/:id/documents          (owner, JSON+base64)
+ * POST /api/v1/coins/:id/documents          (owner, JSON+base64;
+ *   optional docType: 'business_license' | 'other' — migration 023;
+ *   a business-license document earns Legitimacy Score points)
  * GET  /api/v1/coins/:id/documents          (public, metadata list)
  * GET  /api/v1/coins/:id/documents/:docId   (public, download)
  * DELETE /api/v1/coins/:id/documents/:docId (owner)
@@ -63,6 +65,10 @@ const DOC_MIME_ALLOW = new Set([
 ]);
 const MAX_DOC_BYTES = 10 * 1024 * 1024;
 const MAX_DOCS_PER_COIN = 10;
+// Document types the Legitimacy Score understands (migration 023).
+// 'business_license' covers a business license or registration document;
+// everything else is 'other' and earns no legitimacy points.
+const DOC_TYPES = new Set(["business_license", "other"]);
 const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
 
 function cleanUrl(raw: string, maxLen: number): string | null {
@@ -182,6 +188,10 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
 
       const filename = str(body.filename).trim().replace(/[\\/]/g, "_").slice(0, 120);
       if (!filename) throw new HttpError(422, "invalid_filename", "filename is required.");
+      const docType = str(body.docType).trim().toLowerCase() || "other";
+      if (!DOC_TYPES.has(docType)) {
+        throw new HttpError(422, "invalid_doc_type", "docType must be 'business_license' or 'other'.");
+      }
       const mimeType = str(body.mimeType).trim().toLowerCase();
       if (!DOC_MIME_ALLOW.has(mimeType)) {
         throw new HttpError(422, "invalid_mime", "Only PDF and image files (png, jpeg, webp, gif) are accepted.");
@@ -206,13 +216,13 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
 
       const id = randomUUID();
       await pool.query(
-        `INSERT INTO coin_documents (id, coin_id, user_id, filename, mime_type, size_bytes, data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, coin.id, userId, filename, mimeType, data.length, data]
+        `INSERT INTO coin_documents (id, coin_id, user_id, filename, mime_type, size_bytes, data, doc_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [id, coin.id, userId, filename, mimeType, data.length, data, docType]
       );
       sendJson(ctx.res, 201, {
         ...ENVELOPE,
-        document: { id, filename, mimeType, sizeBytes: data.length },
+        document: { id, filename, mimeType, sizeBytes: data.length, docType },
       });
     } catch (err) { fail(ctx, err); }
   });
@@ -224,7 +234,7 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
       const pool = getPool();
       const r = await pool.query(
         `SELECT id, filename, mime_type AS "mimeType", size_bytes AS "sizeBytes",
-                created_at AS "createdAt"
+                doc_type AS "docType", created_at AS "createdAt"
          FROM coin_documents WHERE coin_id = $1 ORDER BY created_at ASC`,
         [ctx.params.id]
       );

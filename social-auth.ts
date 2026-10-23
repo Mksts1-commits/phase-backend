@@ -389,7 +389,7 @@ export async function generateCodeChallenge(verifier: string): Promise<string> {
 // Store interface (Postgres + in-memory fallback)
 // ---------------------------------------------------------------------------
 
-interface SocialStore {
+export interface SocialStore {
   saveConnection(c: {
     userId: string; provider: SocialProvider; providerUserId: string;
     username: string; displayName: string; avatarUrl: string | null;
@@ -449,12 +449,31 @@ class MemorySocialStore implements SocialStore {
 }
 
 // ---------------------------------------------------------------------------
+// Shared store — the process-wide connection records. mountSocialRoutes
+// uses this when no store is injected, so sibling modules (legitimacy.ts)
+// read the very connections the /api/v1/social/* routes serve, instead of
+// a private copy that would always look empty.
+// ---------------------------------------------------------------------------
+
+let sharedSocialStore: SocialStore | null = null;
+
+export function getSocialStore(): SocialStore {
+  if (!sharedSocialStore) sharedSocialStore = new MemorySocialStore();
+  return sharedSocialStore;
+}
+
+/** A user's OAuth social connections (public profile shape, no tokens). */
+export async function listSocialConnections(userId: string): Promise<SocialConnection[]> {
+  return getSocialStore().listConnections(userId);
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
 export function mountSocialRoutes(deps: RouteCtx, store?: SocialStore) {
   const { route, sendJson, HttpError } = deps;
-  const db: SocialStore = store || new MemorySocialStore();
+  const db: SocialStore = store || getSocialStore();
 
   // The userId for private routes ALWAYS comes from the authenticated Bearer
   // session. A client-supplied userId in the body/query is never trusted: if
