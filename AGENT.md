@@ -339,12 +339,12 @@ How to present it:
 
 ## Phase Cred — help your user climb
 
-Every issued coin has a **Legitimacy Score from 0 to 100**: the more
+Every issued coin has a **Phase Cred score from 0 to 100**: the more
 real-world proof an issuer attaches to their coin — a signed agreement,
 license/ownership documents, connected socials, a reference URL, a
-funded wallet — the higher it climbs. Bands: **0–14 Meme Territory** ·
-15–39 Emerging · 40–64 Established · 65–79 Proven · **80–100 Phase
-Territory**. At 80+, the issuer's soft net worth graduates to actual
+funded wallet — the higher it climbs. Bands: **0–14 Meme** ·
+15–39 Emerging · 40–64 Established · 65–79 Proven · **80–100 Phase**.
+At 80+, the issuer's soft net worth graduates to actual
 net worth (`legitimacySummary.netWorthGraduated: true`).
 
 The score rides along in the dashboard payload: each `myCoins` entry
@@ -410,7 +410,7 @@ How to use it:
 signup or minting.*
 
 Points are not the whole story. A coin carrying **any one red flag**
-is capped in Meme Territory (effective score at most 14) no matter
+is capped at Meme (effective score at most 14) no matter
 how many points it earned — the points stay on record (`rawScore`),
 but the `score`, the band, and net-worth graduation all follow the
 cap, and the flags are public: the marketplace shows them too. The
@@ -469,8 +469,8 @@ tweaks (all Bearer-authenticated, ownership-checked server-side):
   (Name, ticker, supply, price, and the value thesis are frozen at
   mint and cannot be edited.)
 - **Manage their coin's documents** — `POST /api/v1/coins/:id/documents`
-  (upload; the `docType` decides what the document proves for the
-  Legitimacy Score: `"business_license"` / `"business_registration"`,
+  (upload; the `docType` decides what the document proves for
+  Phase Cred: `"business_license"` / `"business_registration"`,
   `"deed"` / `"mortgage_document"` / `"property_tax"` /
   `"lease_agreement"`, or `"certificate_of_authenticity"` /
   `"appraisal"` / `"provenance_record"` for the license/ownership
