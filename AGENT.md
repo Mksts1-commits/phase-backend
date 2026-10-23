@@ -272,7 +272,7 @@ Territory**. At 80+, the issuer's soft net worth graduates to actual
 net worth (`legitimacySummary.netWorthGraduated: true`).
 
 The score rides along in the dashboard payload: each `myCoins` entry
-has `legitimacy: { score, band, bandLabel, groups }`, where `groups`
+has `legitimacy: { score, band, bandLabel, groups, redFlags }`, where `groups`
 (Legal / Presence / Financial / Product) list every item with its
 `points`, `earned`, `done`, a `hint` for what's missing, and a
 `status`: `"earned"` (done), `"available"` (earnable today — the user
@@ -327,6 +327,34 @@ How to use it:
   for older coins) and a dead link earns nothing — the item's hint
   will say the link isn't working. Confirm a URL opens before you
   submit it for your user.
+
+### Red flags — an automatic cap at Meme
+
+Points are not the whole story. A coin carrying **any one red flag**
+is capped in Meme Territory (effective score at most 14) no matter
+how many points it earned — the points stay on record (`rawScore`),
+but the `score`, the band, and net-worth graduation all follow the
+cap, and the flags are public: the marketplace shows them too. The
+four flags (`legitimacy.redFlags: [{ key, label }]`):
+
+1. **No signed Issuer Agreement** (`no_agreement`) — including meme
+   coins minted without one — or an agreement signed with a name
+   that reads as gibberish (`gibberish_signer`).
+2. **A linked page doesn't work** (`dead_link`) — the coin's website
+   URL, or any listed social profile, failed its liveness check.
+   (A link that was never added is not a flag — it just earns 0.)
+3. **No value thesis** (`no_thesis`), or one that reads as
+   gibberish (`gibberish_thesis`).
+4. **Issuer email domain can't receive mail** (`bad_email_domain`) —
+   the account's email domain publishes no MX records and resolves
+   to no host, so the address cannot receive mail.
+
+If your user's coin shows a flag, name it plainly and fix the cause
+through the normal flows (sign the agreement with the real legal
+name, replace the dead link, write a real thesis). Flags tied to the
+coin's records clear on the next scored read once the record behind
+them is fixed — a capped coin is a to-do list, not a verdict on the
+issuer.
 
 ## Browse the marketplace — agent view
 

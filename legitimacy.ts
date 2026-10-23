@@ -41,6 +41,23 @@
  * while NO social OAuth provider is configured — issuers shouldn't be
  * sent on homework the platform can't take.
  *
+ * RED FLAGS (Mikyas's rule, 2026-10-23): points are not the whole
+ * story — any single red flag caps the coin at Meme band no matter
+ * how many points it earned (effectiveScore = min(raw, 14)):
+ *   - no signed Issuer Agreement, or a signer name that reads as
+ *     gibberish (isGibberishName);
+ *   - a linked page that doesn't work — the website URL or any
+ *     listed social profile whose persisted verdict is broken;
+ *   - a missing value thesis, or one that reads as gibberish
+ *     (isGibberishThesis);
+ *   - an issuer email domain that definitively cannot receive mail
+ *     (email-domain-check.ts; inconclusive DNS never flags).
+ * Flags ride along in every view (owner + public) with plain-language
+ * labels — the market seeing WHY a coin is Meme is the point. The raw
+ * points stay visible in the owner payload (rawScore, item points);
+ * `score` and the band are always the EFFECTIVE values, so net-worth
+ * graduation (80+) is impossible while any flag stands.
+ *
  * Wiring:
  *   - GET /api/v1/agent/dashboard (agent-interface.ts) embeds
  *     `legitimacy` on each myCoins entry + a top-level
@@ -61,6 +78,11 @@ import {
 } from "./issuance.js";
 import { listSocialConnections, anySocialProviderConfigured } from "./social-auth.js";
 import { ensureLinkVerdicts, normalizeLinkStatus } from "./link-check.js";
+import {
+  ensureEmailDomainVerdict,
+  type EmailDomainStatus,
+  type EmailDomainVerdict,
+} from "./email-domain-check.js";
 import { checkRateLimit } from "./rate-limit.js";
 
 // ---------------------------------------------------------------------------
@@ -84,6 +106,9 @@ export interface LegitimacyFacts {
   category: string | null;
   /** Signed declaration: legal name + issuer type on the signature. */
   legalIdentityDeclared: boolean;
+  /** The legal name on the signature (null when unsigned). Feeds the
+   *  gibberish-signer red flag only — never the points. */
+  signerLegalName: string | null;
   /** A government-issued ID document is on file for the coin. */
   hasGovernmentId: boolean;
   socialConnected: boolean;
@@ -94,10 +119,17 @@ export interface LegitimacyFacts {
   socialProfileCount: number;
   /** At least one social profile is listed (working or not). */
   socialProfilesExist: boolean;
+  /** At least one listed social profile's link verdict is broken.
+   *  Feeds the dead-link red flag (an absent link is NOT a flag). */
+  socialProfileBroken: boolean;
   /** Documentary bank proof: a bank_statement or financial_report
    *  document is on file for the coin (NOT a live bank connection). */
   bankLinked: boolean;
   walletFunded: boolean;
+  /** The issuer account's email domain definitively cannot receive
+   *  mail (email-domain-check verdict "bad"; inconclusive DNS and an
+   *  unreachable user store both read false — never flag on doubt). */
+  emailDomainBad: boolean;
   tagline: string | null;
   valueThesis: string | null;
   hasLogo: boolean;
@@ -110,14 +142,17 @@ export const EMPTY_LEGITIMACY_FACTS: LegitimacyFacts = {
   hasOwnershipDocument: false,
   category: null,
   legalIdentityDeclared: false,
+  signerLegalName: null,
   hasGovernmentId: false,
   socialConnected: false,
   referenceUrl: null,
   websiteUrlBroken: false,
   socialProfileCount: 0,
   socialProfilesExist: false,
+  socialProfileBroken: false,
   bankLinked: false,
   walletFunded: false,
+  emailDomainBad: false,
   tagline: null,
   valueThesis: null,
   hasLogo: false,
@@ -272,6 +307,92 @@ export function bandForScore(score: number): { band: LegitimacyBandKey; bandLabe
   return { band: "meme", bandLabel: "Meme Territory" };
 }
 
+// ---------------------------------------------------------------------------
+// Red flags — any one of them caps the coin at Meme band (score ≤ 14)
+// regardless of points. Detectors are explainable heuristics, tuned
+// conservatively: they exist to catch keyboard-mash ("ghhjjsrtv"),
+// never to judge real names or real writing.
+// ---------------------------------------------------------------------------
+
+export interface LegitimacyRedFlag {
+  key: string;
+  label: string;
+}
+
+/** The Meme-band ceiling an effective score is capped at when any
+ *  red flag stands (top of the 0–14 Meme band). */
+export const RED_FLAG_CAP = 14;
+
+const HAS_VOWEL = /[aeiou]/;
+
+/** Gibberish legal name: the name (letters only) has NO vowel and is
+ *  at least 4 letters ("ghhjjsrtv"), or it contains a run of 6+
+ *  consonants. Real names — including short vowel-less ones like
+ *  "Ng" and consonant-heavy ones like "Schmidt" — never trip: the
+ *  length floor and the 6-run keep both rules out of their reach. */
+export function isGibberishName(name: string | null | undefined): boolean {
+  if (typeof name !== "string") return false;
+  const letters = name.toLowerCase().replace(/[^a-z]/g, "");
+  if (letters.length === 0) return false;
+  if (!HAS_VOWEL.test(letters) && letters.length >= 4) return true;
+  return /[^aeiou]{6,}/.test(letters);
+}
+
+/** Gibberish value thesis. Words are letter-runs of length ≥ 3.
+ *  Trips when:
+ *   - ≥ 50% of those words contain no vowel, or
+ *   - there are ≥ 6 such words and the unique-word ratio is < 0.3
+ *     (the same few words pasted over and over), or
+ *   - a single vowel-less word is repeated until it makes up ≥ 1/3
+ *     of the text (the "ghhjjsrtv ghhjjsrtv …" pattern: 4 of 9
+ *     words — its plain no-vowel ratio is only 44% and its unique
+ *     ratio 0.67, so the first two rules alone miss it).
+ *  Real theses — even short or repetitive marketing copy — carry
+ *  vowels in nearly every word and don't come near any rule. */
+export function isGibberishThesis(thesis: string | null | undefined): boolean {
+  if (typeof thesis !== "string") return false;
+  const words = thesis
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter((w) => w.length >= 3);
+  if (words.length === 0) return false;
+  const noVowelCount = words.filter((w) => !HAS_VOWEL.test(w)).length;
+  if (noVowelCount / words.length >= 0.5) return true;
+  if (words.length >= 6) {
+    if (new Set(words).size / words.length < 0.3) return true;
+    const counts = new Map<string, number>();
+    for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1);
+    for (const [w, c] of counts) {
+      if (c / words.length >= 1 / 3 && !HAS_VOWEL.test(w)) return true;
+    }
+  }
+  return false;
+}
+
+/** The flags standing on a coin, in product order. Pure: facts in,
+ *  flags out. Absent links are NOT a dead link (just 0 points); an
+ *  absent thesis is its own flag, distinct from a gibberish one. */
+export function computeRedFlags(facts: LegitimacyFacts): LegitimacyRedFlag[] {
+  const flags: LegitimacyRedFlag[] = [];
+  if (!facts.agreementSigned) {
+    flags.push({ key: "no_agreement", label: "No signed Issuer Agreement" });
+  } else if (isGibberishName(facts.signerLegalName)) {
+    flags.push({ key: "gibberish_signer", label: "Agreement name looks invalid" });
+  }
+  if (facts.websiteUrlBroken || facts.socialProfileBroken) {
+    flags.push({ key: "dead_link", label: "A linked page doesn't work" });
+  }
+  if (!nonEmpty(facts.valueThesis)) {
+    flags.push({ key: "no_thesis", label: "No value thesis" });
+  } else if (isGibberishThesis(facts.valueThesis)) {
+    flags.push({ key: "gibberish_thesis", label: "Value thesis looks like gibberish" });
+  }
+  if (facts.emailDomainBad) {
+    flags.push({ key: "bad_email_domain", label: "Issuer email domain can't receive mail" });
+  }
+  return flags;
+}
+
 /** Per-item availability, so a UI can tell "you haven't done this"
  *  (available) from "the platform can't take this yet" (coming_soon):
  *  - "earned": the record exists; points are in the score.
@@ -294,26 +415,33 @@ export interface LegitimacyGroupView {
   items: LegitimacyItemView[];
 }
 export interface LegitimacyScore {
+  /** The EFFECTIVE score: rawScore capped at RED_FLAG_CAP while any
+   *  red flag stands. The band always derives from this value. */
   score: number;
+  /** The uncapped points total (the sum of earned item points). For
+   *  a flag-free coin, rawScore === score. */
+  rawScore: number;
   band: LegitimacyBandKey;
   bandLabel: string;
+  redFlags: LegitimacyRedFlag[];
   groups: LegitimacyGroupView[];
 }
 
 /** Pure scorer: facts in, display-ready score out. Deterministic.
  *  The optional context only drives each item's availability `status`;
- *  it never changes points. */
+ *  it never changes points. Red flags never change item points either
+ *  — they cap the headline score (and with it the band). */
 export function scoreLegitimacy(
   facts: LegitimacyFacts,
   context: LegitimacyContext = DEFAULT_LEGITIMACY_CONTEXT
 ): LegitimacyScore {
-  let score = 0;
+  let rawScore = 0;
   const byGroup = new Map<LegitimacyGroupKey, LegitimacyItemView[]>();
   for (const g of GROUP_ORDER) byGroup.set(g, []);
   for (const item of LEGITIMACY_RUBRIC) {
     const done = item.earned(facts);
     const earned = done ? item.points : 0;
-    score += earned;
+    rawScore += earned;
     const status: LegitimacyItemStatus = done
       ? "earned"
       : item.comingSoon?.(context)
@@ -329,11 +457,15 @@ export function scoreLegitimacy(
       hint: item.hintFor ? item.hintFor(facts) : item.hint,
     });
   }
+  const redFlags = computeRedFlags(facts);
+  const score = redFlags.length > 0 ? Math.min(rawScore, RED_FLAG_CAP) : rawScore;
   const { band, bandLabel } = bandForScore(score);
   return {
     score,
+    rawScore,
     band,
     bandLabel,
+    redFlags,
     groups: GROUP_ORDER.map((g) => ({ key: g, label: GROUP_LABELS[g], items: byGroup.get(g)! })),
   };
 }
@@ -369,6 +501,9 @@ interface UserFacts {
   socialConnected: boolean;
   walletFunded: boolean;
   socialProviderConfigured: boolean;
+  /** The account email domain's persisted deliverability verdict is
+   *  "bad" (migration 026) — checked lazily once, here, and stored. */
+  emailDomainBad: boolean;
 }
 
 async function gatherUserFacts(userId: string): Promise<UserFacts> {
@@ -399,7 +534,50 @@ async function gatherUserFacts(userId: string): Promise<UserFacts> {
     walletFunded = r.rows.length > 0;
   } catch { /* no funding ledger reachable — not earned */ }
 
-  return { socialConnected, walletFunded, socialProviderConfigured };
+  // Email-domain deliverability (red flag input): the verdict lives
+  // on the user record (migration 026). A stored verdict is final —
+  // only a user with none is resolved, once, and written back. Any
+  // failure along the way (no user store, DNS trouble) reads as NOT
+  // bad: the flag fires only on a definitive "bad".
+  let emailDomainBad = false;
+  try {
+    const r = await getPool().query(
+      `SELECT email, email_domain_status AS "emailDomainStatus",
+              email_domain_checked_at AS "emailDomainCheckedAt"
+         FROM issuance_users WHERE id = $1`,
+      [userId]
+    );
+    const row = r.rows[0] as
+      | { email?: unknown; emailDomainStatus?: unknown; emailDomainCheckedAt?: unknown }
+      | undefined;
+    const email = typeof row?.email === "string" ? row.email : null;
+    if (email) {
+      let stored: EmailDomainVerdict | null = null;
+      const s = row?.emailDomainStatus;
+      if (s === "ok" || s === "bad" || s === "unknown") {
+        stored = {
+          status: s as EmailDomainStatus,
+          checkedAt: typeof row?.emailDomainCheckedAt === "string"
+            ? row.emailDomainCheckedAt
+            : row?.emailDomainCheckedAt instanceof Date
+              ? row.emailDomainCheckedAt.toISOString()
+              : "",
+        };
+      }
+      if (!stored) {
+        stored = await ensureEmailDomainVerdict(email, null);
+        await getPool().query(
+          `UPDATE issuance_users
+              SET email_domain_status = $2, email_domain_checked_at = $3
+            WHERE id = $1 AND email_domain_status IS NULL`,
+          [userId, stored.status, stored.checkedAt]
+        ).catch(() => { /* a lost write race just re-checks next read */ });
+      }
+      emailDomainBad = stored.status === "bad";
+    }
+  } catch { /* user store unreachable — not flagged */ }
+
+  return { socialConnected, walletFunded, socialProviderConfigured, emailDomainBad };
 }
 
 /** Document types that earn the license/ownership item
@@ -511,6 +689,7 @@ export async function factsForCoin(
     hasOwnershipDocument: hasOwnershipDocument(docTypes),
     category: coin.category ?? draft?.category ?? null,
     legalIdentityDeclared,
+    signerLegalName: signature?.legalName ?? null,
     hasGovernmentId: docTypes.includes("government_id"),
     socialConnected: userFacts.socialConnected,
     referenceUrl: websiteUrl,
@@ -518,6 +697,9 @@ export async function factsForCoin(
     // Only profiles whose link works count toward the item.
     socialProfileCount: profiles.filter((p) => !isBroken(p.url)).length,
     socialProfilesExist: profiles.length > 0,
+    // One broken listed profile is enough for the dead-link flag.
+    socialProfileBroken: profiles.some((p) => isBroken(p.url)),
+    emailDomainBad: userFacts.emailDomainBad,
     // Documentary, not a live link: a bank statement or financial
     // report document on file for the coin earns this (same store and
     // pattern as the business license, above).
@@ -563,6 +745,10 @@ export interface PublicLegitimacy {
   score: number;
   band: LegitimacyBandKey;
   earned: Array<{ key: string; label: string; points: number }>;
+  /** Red flags standing on the coin ({key, label} only). Public on
+   *  purpose: the market seeing WHY a coin is capped at Meme is the
+   *  point of the flag system. */
+  redFlags: Array<{ key: string; label: string }>;
 }
 
 export function publicLegitimacyView(s: LegitimacyScore): PublicLegitimacy {
@@ -572,7 +758,12 @@ export function publicLegitimacyView(s: LegitimacyScore): PublicLegitimacy {
       if (it.done) earned.push({ key: it.key, label: it.label, points: it.points });
     }
   }
-  return { score: s.score, band: s.band, earned };
+  return {
+    score: s.score,
+    band: s.band,
+    earned,
+    redFlags: s.redFlags.map((f) => ({ key: f.key, label: f.label })),
+  };
 }
 
 export const EMPTY_PUBLIC_LEGITIMACY: PublicLegitimacy = publicLegitimacyView(

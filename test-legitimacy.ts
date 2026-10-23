@@ -39,6 +39,13 @@ import { getSocialStore } from "./social-auth.js";
 import { getIssuanceStore } from "./issuance.js";
 import { setLinkFetcher, verdictForStatus, verdictForError } from "./link-check.js";
 import {
+  checkEmailDomain,
+  ensureEmailDomainVerdict,
+  verdictForDnsLookup,
+  setEmailDomainResolver,
+  emailDomainOf,
+} from "./email-domain-check.js";
+import {
   scoreLegitimacy,
   bandForScore,
   summarizeLegitimacy,
@@ -46,6 +53,10 @@ import {
   hasBankDocument,
   hasOwnershipDocument,
   ownershipHintFlavor,
+  computeRedFlags,
+  isGibberishName,
+  isGibberishThesis,
+  RED_FLAG_CAP,
   BROKEN_LINK_HINT,
   EMPTY_LEGITIMACY_FACTS,
   EMPTY_PUBLIC_LEGITIMACY,
@@ -81,14 +92,17 @@ const FULL: LegitimacyFacts = {
   hasOwnershipDocument: true,
   category: "Creator",
   legalIdentityDeclared: true,
+  signerLegalName: "Legit Legal Name",
   hasGovernmentId: true,
   socialConnected: true,
   referenceUrl: "https://example.com",
   websiteUrlBroken: false,
   socialProfileCount: 2,
   socialProfilesExist: true,
+  socialProfileBroken: false,
   bankLinked: true,
   walletFunded: true,
+  emailDomainBad: false,
   tagline: "A tagline",
   valueThesis: "A thesis",
   hasLogo: true,
@@ -131,21 +145,34 @@ console.log("legitimacy scorer (pure)");
     full.groups.every((g) => g.items.every((i) => i.done && i.earned === i.points)));
 
   // Band edges — each fact set sums exactly to the edge score.
+  // Fixtures that must reach a band above Meme are flag-free (a real
+  // signer name + a real thesis — neither earns points without a
+  // tagline, so the sums are unchanged): under the red-flag rules an
+  // unsigned or thesis-less coin is capped at 14 by design, so a
+  // flag-free 15 is impossible (the cheapest clean coin is the
+  // 20-point agreement alone). The 15 edge is covered below as a cap
+  // case + the pure bandForScore check.
+  const CLEAN: Partial<LegitimacyFacts> = {
+    signerLegalName: "Edge Case",
+    valueThesis: "A real value thesis.",
+  };
   const edges: Array<[number, Partial<LegitimacyFacts>, string]> = [
     [14, { walletFunded: true, hasLogo: true }, "meme"],
-    [15, { bankLinked: true }, "emerging"],
-    [39, { agreementSigned: true, hasOwnershipDocument: true, referenceUrl: "https://x.co" }, "emerging"],
-    [40, { agreementSigned: true, hasOwnershipDocument: true, legalIdentityDeclared: true, hasGovernmentId: true }, "established"],
-    [64, { agreementSigned: true, bankLinked: true, socialConnected: true, walletFunded: true, referenceUrl: "https://x.co" }, "established"],
-    [65, { agreementSigned: true, bankLinked: true, socialConnected: true, walletFunded: true, legalIdentityDeclared: true, hasGovernmentId: true }, "proven"],
+    [39, { ...CLEAN, agreementSigned: true, hasOwnershipDocument: true, referenceUrl: "https://x.co" }, "emerging"],
+    [40, { ...CLEAN, agreementSigned: true, hasOwnershipDocument: true, legalIdentityDeclared: true, hasGovernmentId: true }, "established"],
+    [64, { ...CLEAN, agreementSigned: true, bankLinked: true, socialConnected: true, walletFunded: true, referenceUrl: "https://x.co" }, "established"],
+    [65, { ...CLEAN, agreementSigned: true, bankLinked: true, socialConnected: true, walletFunded: true, legalIdentityDeclared: true, hasGovernmentId: true }, "proven"],
     [79, { ...FULL, bankLinked: false, tagline: null }, "proven"],
-    [80, { ...FULL, agreementSigned: false }, "phase"],
+    [80, { ...FULL, walletFunded: false, tagline: null, hasLogo: false }, "phase"],
   ];
   for (const [want, facts, band] of edges) {
     const s = scoreLegitimacy(F(facts));
-    ok(`edge ${want} sums exactly`, s.score === want, `score=${s.score}`);
+    ok(`edge ${want} sums exactly`, s.score === want && s.rawScore === want,
+      `score=${s.score} raw=${s.rawScore}`);
     ok(`edge ${want} -> ${band}`, s.band === band && bandForScore(want).band === band);
   }
+  ok("bandForScore(15) is emerging (pure band arithmetic)",
+    bandForScore(15).band === "emerging");
 
   const sum = summarizeLegitimacy([
     { ticker: "AAA", legitimacy: scoreLegitimacy(F({ bankLinked: true })) },
@@ -262,6 +289,101 @@ console.log("legitimacy scorer (pure)");
   ok("public view: EMPTY_PUBLIC_LEGITIMACY is the zero view",
     EMPTY_PUBLIC_LEGITIMACY.score === 0 && EMPTY_PUBLIC_LEGITIMACY.band === "meme" &&
     EMPTY_PUBLIC_LEGITIMACY.earned.length === 0);
+
+  // --- red-flag detectors: signer names --------------------------------
+  ok("name detector: keyboard mash trips", isGibberishName("ghhjjsrtv") === true);
+  ok("name detector: mash split by a space still trips", isGibberishName("ghhj jsrtv") === true);
+  for (const n of ["James Golden", "Mikyas Mulugeta Tesema", "Ng", "Chen",
+                   "Legit Legal Name", "Anne-Marie Osei", "Rajesh Krishnamurthy",
+                   "Christopher Schmidt", "Blythe Smyth"]) {
+    ok(`name detector: real name passes (${n})`, isGibberishName(n) === false);
+  }
+  ok("name detector: null/empty never trips",
+    isGibberishName(null) === false && isGibberishName("") === false &&
+    isGibberishName(undefined) === false);
+
+  // --- red-flag detectors: value theses --------------------------------
+  const GHHJ_THESIS =
+    "ghhjjsrtv ghhjjsrtv number go up because ghhjjsrtv. no utility no roadmap just ghhjjsrtv.";
+  ok("thesis detector: the GHHJ thesis trips", isGibberishThesis(GHHJ_THESIS) === true);
+  ok("thesis detector: pure consonant mash trips",
+    isGibberishThesis("sdfg hjkl zxcv bnmq") === true);
+  ok("thesis detector: one repeated word pasted over and over trips",
+    isGibberishThesis("moon moon moon moon moon moon moon") === true);
+  for (const t of [
+    "JMS12 is the community coin of James's TikTok Live show. Holders are the show's inner circle: they get shoutouts, help pick show segments and guests, and share in the growth of the show as its audience grows.",
+    "Exists to prove the legitimacy score climbs as proof is attached.",
+    "Revenue share from a real studio.",
+    "A test coin from the landing wizard",
+    "Architect of flow state.",
+    "Influencer",
+  ]) {
+    ok(`thesis detector: real thesis passes (${t.slice(0, 32)}…)`, isGibberishThesis(t) === false);
+  }
+  ok("thesis detector: null/empty never trips (absence is its own flag)",
+    isGibberishThesis(null) === false && isGibberishThesis("") === false);
+
+  // --- red flags: the cap ------------------------------------------------
+  const flagKeys = (s: LegitimacyScore) => s.redFlags.map((f) => f.key).join(",");
+  const fullClean = scoreLegitimacy(FULL);
+  ok("clean full coin: no flags, score == rawScore == 100",
+    fullClean.redFlags.length === 0 && fullClean.score === 100 && fullClean.rawScore === 100);
+  ok("public view: clean coin carries redFlags []",
+    Array.isArray(pubFull.redFlags) && pubFull.redFlags.length === 0);
+  ok("public view: EMPTY flags the empty record (no agreement, no thesis)",
+    EMPTY_PUBLIC_LEGITIMACY.redFlags.map((f) => f.key).join(",") === "no_agreement,no_thesis",
+    JSON.stringify(EMPTY_PUBLIC_LEGITIMACY.redFlags));
+
+  const capCases: Array<[string, Partial<LegitimacyFacts>, string, number]> = [
+    ["dead link (website)", { websiteUrlBroken: true }, "dead_link", 93],
+    ["dead link (social profile)", { socialProfileBroken: true }, "dead_link", 100],
+    ["no agreement", { agreementSigned: false, signerLegalName: null }, "no_agreement", 80],
+    ["gibberish signer", { signerLegalName: "ghhjjsrtv" }, "gibberish_signer", 100],
+    ["no thesis", { valueThesis: null }, "no_thesis", 94],
+    ["gibberish thesis", { valueThesis: GHHJ_THESIS }, "gibberish_thesis", 100],
+    ["bad email domain", { emailDomainBad: true }, "bad_email_domain", 100],
+  ];
+  for (const [name, over, flag, raw] of capCases) {
+    const s = scoreLegitimacy(F({ ...FULL, ...over }));
+    ok(`cap: ${name} -> effective ${RED_FLAG_CAP} / meme with only that flag`,
+      s.score === RED_FLAG_CAP && s.band === "meme" && s.rawScore === raw && flagKeys(s) === flag,
+      `score=${s.score} raw=${s.rawScore} flags=${flagKeys(s)}`);
+    ok(`cap: ${name} -> item points unchanged (items still sum to raw)`,
+      s.groups.flatMap((g) => g.items).reduce((a, i) => a + i.earned, 0) === raw);
+  }
+
+  const raw15 = scoreLegitimacy(F({ bankLinked: true }));
+  ok("raw 15 without agreement/thesis caps to 14 / meme (flags, not arithmetic)",
+    raw15.rawScore === 15 && raw15.score === 14 && raw15.band === "meme" &&
+    flagKeys(raw15) === "no_agreement,no_thesis", flagKeys(raw15));
+
+  const ghhj = scoreLegitimacy(F({
+    socialProfileCount: 1, socialProfilesExist: true,
+    tagline: "ghhjjsrtv asdf qwer moon soon trust", valueThesis: GHHJ_THESIS,
+    referenceUrl: "https://www.ghhjjsrtv-official-moon.com", websiteUrlBroken: true,
+    emailDomainBad: true,
+  }));
+  ok("GHHJ shape: flags in order no_agreement, dead_link, gibberish_thesis, bad_email_domain",
+    flagKeys(ghhj) === "no_agreement,dead_link,gibberish_thesis,bad_email_domain", flagKeys(ghhj));
+  ok("GHHJ shape: raw 12 already under the cap -> effective 12 / meme",
+    ghhj.rawScore === 12 && ghhj.score === 12 && ghhj.band === "meme",
+    `raw=${ghhj.rawScore} score=${ghhj.score}`);
+
+  const cappedSummary = summarizeLegitimacy([
+    { ticker: "CAP", legitimacy: scoreLegitimacy(F({ ...FULL, emailDomainBad: true })) },
+  ]);
+  ok("a capped coin cannot graduate net worth",
+    cappedSummary.netWorthGraduated === false && cappedSummary.bestScore === RED_FLAG_CAP);
+
+  const pubCapped = publicLegitimacyView(scoreLegitimacy(F({ ...FULL, emailDomainBad: true })));
+  ok("public view: capped coin exposes {key,label} flags and the capped score",
+    pubCapped.score === RED_FLAG_CAP && pubCapped.band === "meme" &&
+    pubCapped.redFlags.length === 1 && pubCapped.redFlags[0].key === "bad_email_domain" &&
+    Object.keys(pubCapped.redFlags[0]).sort().join(",") === "key,label",
+    JSON.stringify(pubCapped.redFlags));
+
+  ok("computeRedFlags: flag-free facts -> []",
+    computeRedFlags(FULL).length === 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +432,49 @@ async function call(method: string, path: string, body: any = {}, headers: Recor
 const auth = (token: string) => ({ authorization: `Bearer ${token}` });
 
 async function main() {
+  console.log("email-domain check (stubbed resolver)");
+  ok("email verdict: MX present -> ok",
+    verdictForDnsLookup({ mx: true, a: false, definitive: true }) === "ok");
+  ok("email verdict: no MX but A present -> ok (implicit MX)",
+    verdictForDnsLookup({ mx: false, a: true, definitive: true }) === "ok");
+  ok("email verdict: definitively neither -> bad",
+    verdictForDnsLookup({ mx: false, a: false, definitive: true }) === "bad");
+  ok("email verdict: inconclusive lookup -> unknown (never flags)",
+    verdictForDnsLookup({ mx: false, a: false, definitive: false }) === "unknown");
+  ok("email domain parsing",
+    emailDomainOf("User@Example.COM") === "example.com" &&
+    emailDomainOf("not-an-email") === null && emailDomainOf("a@localhost") === null &&
+    emailDomainOf(null) === null && emailDomainOf(undefined) === null);
+  setEmailDomainResolver(async (domain: string) => {
+    if (domain === "quickmail-xyz.net") return { mx: false, a: false, definitive: true };
+    if (domain === "flaky.example.com") return { mx: false, a: false, definitive: false };
+    if (domain === "a-only.example.com") return { mx: false, a: true, definitive: true };
+    return { mx: true, a: false, definitive: true };
+  });
+  ok("email check: definitive dead domain -> bad",
+    (await checkEmailDomain("ghhjjsrtv@quickmail-xyz.net")).status === "bad");
+  ok("email check: MX domain -> ok",
+    (await checkEmailDomain("someone@gmail.com")).status === "ok");
+  ok("email check: A-only domain -> ok",
+    (await checkEmailDomain("x@a-only.example.com")).status === "ok");
+  ok("email check: inconclusive DNS -> unknown, not bad",
+    (await checkEmailDomain("x@flaky.example.com")).status === "unknown");
+  ok("email check: unparseable address -> unknown",
+    (await checkEmailDomain("not-an-email")).status === "unknown");
+  setEmailDomainResolver(async () => { throw new Error("resolver boom"); });
+  ok("email check: resolver failure -> unknown (fail open)",
+    (await checkEmailDomain("x@gmail.com")).status === "unknown");
+  let resolveCalls = 0;
+  setEmailDomainResolver(async () => {
+    resolveCalls++;
+    return { mx: true, a: false, definitive: true };
+  });
+  const storedVerdict = { status: "bad" as const, checkedAt: "2026-01-01T00:00:00.000Z" };
+  const ensured = await ensureEmailDomainVerdict("x@gmail.com", storedVerdict);
+  ok("email check: a stored verdict is returned without re-resolving",
+    ensured.status === "bad" && resolveCalls === 0, `calls=${resolveCalls}`);
+  setEmailDomainResolver(null);
+
   console.log("legitimacy endpoints (in-memory)");
   const sequencer = startSequencerLoop();
   // Hermetic link checks: every URL "works" until a flow below says
@@ -369,6 +534,9 @@ async function main() {
   const leg = entry?.legitimacy;
   ok("score 51 (20+12+7+6+6)", leg?.score === 51, `score=${leg?.score}`);
   ok("51 -> Established", leg?.band === "established" && leg?.bandLabel === "Established");
+  ok("flow coin: no red flags, rawScore == score == 51",
+    Array.isArray(leg?.redFlags) && leg.redFlags.length === 0 && leg?.rawScore === 51,
+    JSON.stringify(leg?.redFlags));
   const items = new Map<string, any>(
     (leg?.groups ?? []).flatMap((g: any) => g.items.map((i: any) => [i.key, i] as [string, any]))
   );
@@ -442,6 +610,8 @@ async function main() {
     logoItem.done === true && logoItem.earned === 4 && logoItem.status === "earned");
   ok("logo coin score 49 (20+12+7+6+4)", logoEntry.legitimacy.score === 49,
     `score=${logoEntry.legitimacy.score}`);
+  ok("logo coin: no red flags", logoEntry.legitimacy.redFlags.length === 0,
+    JSON.stringify(logoEntry.legitimacy.redFlags));
 
   // --- Broken-link coin: a dead reference URL earns nothing -----------
   setLinkFetcher(async (url: string) => (url.includes("dead.example.com") ? 404 : 200));
@@ -465,8 +635,17 @@ async function main() {
   const deadRef = itemOf(deadEntry.legitimacy, "reference_url");
   ok("dead reference URL earns 0 with the broken-link hint",
     deadRef.done === false && deadRef.earned === 0 && deadRef.hint === BROKEN_LINK_HINT, deadRef.hint);
-  ok("dead-link coin score 32 (20+12 only)", deadEntry.legitimacy.score === 32,
-    `score=${deadEntry.legitimacy.score}`);
+  // Red-flag cap (2026-10-23): the dead link no longer just costs the
+  // item — it caps the coin at Meme. Raw points are unchanged.
+  ok("dead-link coin: raw points unchanged (items sum to 32 = 20+12)",
+    deadEntry.legitimacy.rawScore === 32 &&
+    deadEntry.legitimacy.groups.flatMap((g: any) => g.items)
+      .reduce((a: number, i: any) => a + i.earned, 0) === 32,
+    `raw=${deadEntry.legitimacy.rawScore}`);
+  ok("dead-link coin: dead_link (+ no_thesis — the draft had none) caps it at 14 / meme",
+    deadEntry.legitimacy.score === 14 && deadEntry.legitimacy.band === "meme" &&
+    deadEntry.legitimacy.redFlags.map((f: any) => f.key).join(",") === "dead_link,no_thesis",
+    JSON.stringify(deadEntry.legitimacy.redFlags));
 
   // --- Legacy coin: no stored verdict -> checked once, then persisted --
   r = await call("POST", "/api/v1/auth/signup",
@@ -496,6 +675,9 @@ async function main() {
   const legacyEntry = first.coins.find((c) => c.ticker === "LEG2");
   ok("legacy coin: reference URL earns after the one lazy check",
     !!legacyEntry && itemOf(legacyEntry.legitimacy, "reference_url").done === true);
+  ok("legacy coin: unsigned + thesis-less record carries no_agreement + no_thesis flags",
+    (legacyEntry?.legitimacy.redFlags ?? []).map((f) => f.key).join(",") === "no_agreement,no_thesis",
+    JSON.stringify(legacyEntry?.legitimacy.redFlags));
   ok("lazy check fetched exactly once", fetchCount === 1, `fetches=${fetchCount}`);
   const storedCoin = (await store.listCoinsByUser(legacyUserId)).find((c) => c.ticker === "LEG2");
   ok("verdict persisted on the coin record",
