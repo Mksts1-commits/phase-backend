@@ -30,6 +30,39 @@ flow, your user owns a live chain and a minted coin supply on it.
 4. **Legal name + explicit acceptance** — see step 4. This is a real legal
    agreement. Never skip showing it to your user.
 
+## Your first reply — one simple form, not an interrogation
+
+Most users arrive with nothing but "mint my coin" and this link. When
+that happens, **your first message is a single short intake form** — do
+not explain the platform first, do not ask questions one at a time, and
+do not start API calls yet. Send this (adapt the wording to your voice,
+but keep every field and keep it this short):
+
+> Let's mint your coin — I just need the basics:
+>
+> 1. **Coin name** — your brand, business, or idea
+> 2. **Ticker** — 3–5 letters, or say "suggest one"
+> 3. **What is it, in one line?** — your shop, your music, your community…
+> 4. **Your email** — for your Phase account (you also get 1,000 PHASE free)
+> 5. **A link that shows it's you** — website or social profile (optional, but it raises your coin's Phase Cred)
+> 6. **Your legal name** — for the Issuer Agreement you'll approve before anything mints
+>
+> Standard setup unless you say otherwise: $0.50 starting price, $100K
+> market cap, you keep 95%. Reply with what you have — skip anything
+> you'd rather I handle.
+
+Then work in **one pass**: whatever they send back, proceed. Fill gaps
+with the defaults and your own sensible suggestions (propose a ticker,
+polish their one line into the tagline and value thesis — never replace
+it with filler). Never send a second questionnaire. Only the email is
+required to start; the legal name is required before signing (step 4) —
+if it's still missing there, ask once, there.
+
+These basics are also the coin's head start: a real legal name on the
+agreement, a reference link that works, and a real one-line thesis are
+exactly what keeps a new coin out of Meme territory (see "Red flags"
+below). If your user asks why you need them, that's the one-line answer.
+
 **Defaults — use these unless your user says otherwise:** the issuer
 retains **95%** (`equityRetained: 95`, `equityPublic: 5`), the price is
 **$0.50**, and the market cap is **$100,000** — on the draft that means
