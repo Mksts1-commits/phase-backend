@@ -68,6 +68,7 @@ import { mountBridgeRoutes } from "./bridge.js";
 import { mountMarketplaceRoutes } from "./marketplace.js";
 import { mountOffersRoutes } from "./offers.js";
 import { mountAgentInterfaceRoutes } from "./agent-interface.js";
+import { mountMcpRoutes } from "./mcp.js";
 import { mountLegitimacyRoutes } from "./legitimacy.js";
 import { mountAdminRoutes } from "./admin.js";
 import { mountLegalDocsRoutes } from "./legal-docs.js";
@@ -1162,6 +1163,13 @@ mountOffersRoutes({ route, sendJson, HttpError });
 // The agent is the full interface: dashboard + marketplace visual
 // payloads, watchlist, and offer cancel. Bearer-only userId throughout.
 mountAgentInterfaceRoutes({ route, sendJson, HttpError });
+
+// --- 8e-vii-c-ii. MCP Apps widget layer (see mcp.ts) ---
+// POST /mcp — stateless Streamable HTTP + ui:// widget resources. Same
+// service, no new env vars; widgets dispatch the existing REST routes
+// in-process. Mounted here (not in the 8e block above) so the MCP route
+// registers after the agent interface it builds on.
+mountMcpRoutes({ route });
 
 // --- 8e-vii-d. Legitimacy Score (see legitimacy.ts) ---
 // GET /api/v1/legitimacy/me — the web app's per-coin legitimacy view on

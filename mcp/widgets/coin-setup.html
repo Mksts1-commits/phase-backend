@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase — Coin setup</title>
+<style><!-- PHASE_CSS --></style>
+</head>
+<body>
+<h2>Set up your coin</h2>
+<p class="sub">Pick the numbers. The supply and split update live — these are the exact figures that get locked into your draft and printed in the agreement.</p>
+
+<label for="name">Coin name</label>
+<input id="name" type="text" maxlength="60" placeholder="e.g. Big W" autocomplete="off">
+
+<label for="ticker">Ticker</label>
+<input id="ticker" type="text" maxlength="10" placeholder="e.g. BGGR" autocomplete="off">
+<p class="note">2–10 letters or numbers. Suggest one from your name, or type your own.</p>
+
+<label>Category</label>
+<div class="row" id="cats">
+  <button type="button" class="chip active" data-cat="Creator">Creator</button>
+  <button type="button" class="chip" data-cat="Business">Business</button>
+  <button type="button" class="chip" data-cat="Community">Community</button>
+  <button type="button" class="chip" data-cat="Personal">Personal</button>
+</div>
+
+<label for="priceRange">Starting price</label>
+<div class="row">
+  <input id="priceRange" type="range" min="0.05" max="5" step="0.05" value="0.50" style="flex:1">
+  <input id="priceNum" type="number" min="0.05" max="5" step="0.05" value="0.50" style="width:96px">
+</div>
+
+<label>Market cap</label>
+<div class="row" id="caps">
+  <button type="button" class="chip" data-cap="50000">$50K</button>
+  <button type="button" class="chip active" data-cap="100000">$100K</button>
+  <button type="button" class="chip" data-cap="250000">$250K</button>
+  <button type="button" class="chip" data-cap="1000000">$1M</button>
+  <input id="capCustom" type="number" min="1000" step="1000" placeholder="Custom $" style="width:130px">
+</div>
+
+<label for="ownRange">You keep</label>
+<div class="row">
+  <input id="ownRange" type="range" min="50" max="99" step="1" value="95" style="flex:1">
+  <input id="ownNum" type="number" min="50" max="99" step="1" value="95" style="width:72px">
+</div>
+
+<div class="card" id="math">
+  <div class="stat">Total supply: <b class="num" id="mSupply">200,000</b></div>
+  <div class="stat">You keep: <b class="num" id="mRetained">190,000 (95%)</b></div>
+  <div class="stat">Public float: <b class="num" id="mFloat">10,000 (5%)</b></div>
+  <div class="stat">Market cap: <b class="num" id="mCap">$100,000</b> at <b class="num" id="mPrice">$0.50</b></div>
+</div>
+
+<div class="err" id="err"></div>
+<div class="ok" id="ok">Sent to your agent — it will create your draft with these values.</div>
+<button id="submit" type="button">Use this setup</button>
+<p class="note">Nothing mints from here. Your agent creates the draft and shows you the agreement to sign.</p>
+
+<script><!-- PHASE_BRIDGE --></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = PhaseBridge.escapeHtml;
+  var fmtInt = function (n) { return Math.round(n).toLocaleString("en-US"); };
+  var fmtUsd = function (n) {
+    return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  var state = { category: "Creator", cap: 100000, price: 0.50, retained: 95 };
+
+  function suggestTicker(name) {
+    var words = (name || "").trim().split(/\s+/).filter(Boolean);
+    var t = "";
+    if (words.length === 1) {
+      t = words[0].replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 5);
+    } else {
+      t = words.map(function (w) { return w.replace(/[^A-Za-z0-9]/g, "").charAt(0); }).join("").toUpperCase().slice(0, 5);
+    }
+    if (t.length < 2) t = (name || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 5);
+    return t;
+  }
+
+  function recalc() {
+    var price = state.price > 0 ? state.price : 0.50;
+    var total = Math.max(1000, Math.round(state.cap / price));
+    var retained = Math.round(total * state.retained / 100);
+    var floatN = total - retained;
+    $("mSupply").textContent = fmtInt(total);
+    $("mRetained").textContent = fmtInt(retained) + " (" + state.retained + "%)";
+    $("mFloat").textContent = fmtInt(floatN) + " (" + (100 - state.retained) + "%)";
+    $("mCap").textContent = fmtUsd(state.cap);
+    $("mPrice").textContent = fmtUsd(price);
+    return { totalShares: total, retainedShares: retained, floatShares: floatN };
+  }
+
+  function syncPrice(v) {
+    var p = Math.min(5, Math.max(0.05, Number(v) || 0.50));
+    state.price = Math.round(p * 100) / 100;
+    $("priceRange").value = state.price;
+    $("priceNum").value = state.price.toFixed(2);
+    recalc();
+  }
+  function syncOwn(v) {
+    var o = Math.min(99, Math.max(50, Math.round(Number(v) || 95)));
+    state.retained = o;
+    $("ownRange").value = o;
+    $("ownNum").value = o;
+    recalc();
+  }
+  function syncCap(v) {
+    var c = Math.max(1000, Math.round(Number(v) || 100000));
+    state.cap = c;
+    var chips = document.querySelectorAll("#caps .chip");
+    chips.forEach(function (ch) {
+      ch.classList.toggle("active", Number(ch.dataset.cap) === c);
+    });
+    if ($("capCustom").value === "" || Number($("capCustom").value) !== c) $("capCustom").value = "";
+    recalc();
+  }
+
+  $("name").addEventListener("input", function () {
+    if (!$("ticker").dataset.touched) $("ticker").value = suggestTicker($("name").value);
+  });
+  $("ticker").addEventListener("input", function () { $("ticker").dataset.touched = "1"; });
+  $("priceRange").addEventListener("input", function (e) { syncPrice(e.target.value); });
+  $("priceNum").addEventListener("change", function (e) { syncPrice(e.target.value); });
+  $("ownRange").addEventListener("input", function (e) { syncOwn(e.target.value); });
+  $("ownNum").addEventListener("change", function (e) { syncOwn(e.target.value); });
+  document.querySelectorAll("#cats .chip").forEach(function (ch) {
+    ch.addEventListener("click", function () {
+      document.querySelectorAll("#cats .chip").forEach(function (c) { c.classList.remove("active"); });
+      ch.classList.add("active");
+      state.category = ch.dataset.cat;
+    });
+  });
+  document.querySelectorAll("#caps .chip").forEach(function (ch) {
+    ch.addEventListener("click", function () { syncCap(ch.dataset.cap); });
+  });
+  $("capCustom").addEventListener("change", function (e) { if (e.target.value) syncCap(e.target.value); });
+
+  function showErr(msg) {
+    var el = $("err");
+    el.textContent = msg;
+    el.style.display = "block";
+    $("ok").style.display = "none";
+  }
+
+  function applyPrefill(p) {
+    if (!p) return;
+    if (p.name) $("name").value = p.name;
+    if (p.ticker) { $("ticker").value = p.ticker; $("ticker").dataset.touched = "1"; }
+    else if (p.name) $("ticker").value = suggestTicker(p.name);
+    if (p.category) {
+      document.querySelectorAll("#cats .chip").forEach(function (c) {
+        var on = c.dataset.cat.toLowerCase() === String(p.category).toLowerCase();
+        c.classList.toggle("active", on);
+        if (on) state.category = c.dataset.cat;
+      });
+    }
+    if (p.priceUsd) syncPrice(p.priceUsd);
+    if (p.marketCapUsd) syncCap(p.marketCapUsd);
+    if (p.retainedPct) syncOwn(p.retainedPct);
+    recalc();
+  }
+
+  /* Prefill comes from the tool call: tool-input arguments first, else the
+   * tool result's structuredContent. */
+  PhaseBridge.onToolInput(function (params) {
+    if (params && params.arguments) applyPrefill(params.arguments);
+  });
+  PhaseBridge.onToolResult(function (result) {
+    var d = PhaseBridge.resultData(result);
+    if (d && d.prefill) applyPrefill(d.prefill);
+    else if (d && d.defaults) applyPrefill(d.defaults);
+  });
+
+  $("submit").addEventListener("click", function () {
+    var name = $("name").value.trim();
+    var ticker = $("ticker").value.trim().toUpperCase();
+    if (name.length < 1 || name.length > 60) { showErr("Coin name must be 1–60 characters."); return; }
+    if (!/^[A-Z0-9]{2,10}$/.test(ticker)) {
+      showErr("Ticker must be 2–10 letters or numbers (e.g. BGGR).");
+      return;
+    }
+    var math = recalc();
+    var setup = {
+      name: name, ticker: ticker, category: state.category,
+      priceUsd: state.price, marketCapUsd: state.cap,
+      totalShares: math.totalShares,
+      retainedPct: state.retained, publicPct: 100 - state.retained,
+      retainedShares: math.retainedShares, floatShares: math.floatShares,
+    };
+    var msg = "I'd like to set up my coin with these values:\n" +
+      "- Name: " + name + "\n" +
+      "- Ticker: " + ticker + "\n" +
+      "- Category: " + state.category + "\n" +
+      "- Price: " + fmtUsd(state.price) + "\n" +
+      "- Market cap: " + fmtUsd(state.cap) + "\n" +
+      "- Total supply: " + fmtInt(math.totalShares) + "\n" +
+      "- I keep: " + state.retained + "% (" + fmtInt(math.retainedShares) + ") · Public float: " +
+      (100 - state.retained) + "% (" + fmtInt(math.floatShares) + ")\n" +
+      JSON.stringify({ coinSetup: setup });
+    var btn = $("submit");
+    btn.disabled = true;
+    btn.textContent = "Sending…";
+    PhaseBridge.sendMessage(msg).then(function () {
+      $("err").style.display = "none";
+      $("ok").style.display = "block";
+      btn.textContent = "Sent";
+    }).catch(function (e) {
+      btn.disabled = false;
+      btn.textContent = "Use this setup";
+      showErr(e && e.message ? e.message : "Couldn't reach your agent. Open this widget inside your AI chat and try again.");
+    });
+  });
+
+  PhaseBridge.connect().then(function () { PhaseBridge.autoResize(); });
+  recalc();
+})();
+</script>
+</body>
+</html>

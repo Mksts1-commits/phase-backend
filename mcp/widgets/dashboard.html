@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase — Dashboard</title>
+<style><!-- PHASE_CSS --></style>
+</head>
+<body>
+<div id="loading"><h2>Loading your dashboard…</h2></div>
+
+<div id="view" style="display:none">
+  <div class="row">
+    <h2 style="flex:1">Your dashboard</h2>
+    <button id="refreshBtn" type="button" class="secondary" style="padding:6px 12px">Refresh</button>
+  </div>
+  <p class="sub" id="summary"></p>
+
+  <h3>Balances</h3>
+  <div class="card" id="balances"></div>
+
+  <h3>Your coins</h3>
+  <div id="coins"></div>
+
+  <h3>Swap offers</h3>
+  <div id="offers"></div>
+
+  <h3>Watchlist</h3>
+  <div id="watchlist"></div>
+
+  <h3>Recent activity</h3>
+  <div id="activity"></div>
+
+  <div class="err" id="err"></div>
+  <h3>Quick actions</h3>
+  <div class="row" id="actions"></div>
+
+  <p class="note" style="margin-top:16px">Test-mode figures — balances and prices are Phase test rails, not real-money value.</p>
+  <button id="dashBtn" type="button" class="secondary">Open your dashboard in the web app</button>
+  <p class="note" id="linkFallback" style="display:none"></p>
+</div>
+
+<script><!-- PHASE_BRIDGE --></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = PhaseBridge.escapeHtml;
+  var fmtInt = function (n) { return Math.round(Number(n) || 0).toLocaleString("en-US"); };
+  var fmtUsd = function (n) {
+    return "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  var DASH_URL = "https://mksts1-commits.github.io/phase-android/app/?tab=dashboard";
+
+  var ctx = { widgetToken: null, data: null };
+
+  var BAND_NAME = { meme: "Meme", emerging: "Emerging", established: "Established", proven: "Proven", phase: "Phase" };
+  function bandColor(band) {
+    if (band === "meme") return "#d92d20";
+    if (band === "phase") return "#2f7bff";
+    return "#16a34a";
+  }
+  function bandClass(band) {
+    if (band === "meme") return "band-meme";
+    if (band === "phase") return "band-phase";
+    return "band-mid";
+  }
+  function ring(score, band) {
+    var c = bandColor(band);
+    var pct = Math.max(0, Math.min(100, Number(score) || 0));
+    var circ = 2 * Math.PI * 15.9155;
+    var off = circ * (1 - pct / 100);
+    return '<span class="ring"><svg width="34" height="34" viewBox="0 0 42 42">' +
+      '<circle cx="21" cy="21" r="15.9155" fill="none" stroke="#e5e7eb" stroke-width="4"/>' +
+      '<circle cx="21" cy="21" r="15.9155" fill="none" stroke="' + c + '" stroke-width="4"' +
+      ' stroke-dasharray="' + circ.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"' +
+      ' stroke-linecap="round" transform="rotate(-90 21 21)"/>' +
+      '</svg><b class="num">' + pct + "%</b></span>";
+  }
+
+  function render(d) {
+    ctx.data = d;
+    $("summary").textContent = d.summary || "";
+    var b = d.balances || {};
+    $("balances").innerHTML =
+      "<div class='stat'>PHASE: <b class='num'>" + fmtInt(b.PHASE) + "</b></div>" +
+      "<div class='stat'>Cash: <b>" + fmtUsd(b.USD) + "</b></div>" +
+      "<div class='stat'>Lifetime sales: <b>" + fmtUsd(b.lifetimeSalesUsd) + "</b></div>";
+
+    var coins = d.myCoins || [];
+    $("coins").innerHTML = coins.length ? coins.map(function (c) {
+      var leg = c.legitimacy || {};
+      var band = leg.band || "emerging";
+      var earned = [];
+      (leg.groups || []).forEach(function (g) {
+        (g.items || []).forEach(function (it) { if (it.done) earned.push(it.label); });
+      });
+      var flags = (leg.redFlags || []).map(function (f) { return f.label; });
+      var pos = c.position || {};
+      var stakeLine = "";
+      if (pos.stakeValueUsdAtList != null) {
+        stakeLine = "<div class='stat'>Your stake at list price: <b>" + fmtUsd(pos.stakeValueUsdAtList) + "</b>" +
+          (pos.realizationRatio === 0 ? " <span class='note'>— nothing sold yet</span>" : "") + "</div>";
+      }
+      return "<div class='card'>" +
+        "<div class='row'><b>" + esc(c.name) + "</b> <span class='tag " +
+        (band === "meme" ? "meme" : band === "phase" ? "phase" : "") + "'>" + esc(c.ticker) + "</span>" +
+        "<span style='flex:1'></span>" + ring(leg.score, band) +
+        "<span class='" + bandClass(band) + "'><b>" + esc(BAND_NAME[band] || band) + "</b></span></div>" +
+        "<div class='stat'>" + esc((c.display && c.display.price) || fmtUsd(c.priceUsd)) +
+        " · Market cap " + esc((c.display && c.display.marketCap) || "") + "</div>" +
+        "<div class='stat'>Your stake: <b class='num'>" + fmtInt(pos.availableUnits) + " " + esc(c.ticker) + "</b></div>" +
+        stakeLine +
+        (flags.length ? "<div class='stat band-meme'>Capped at Meme: " + esc(flags.join(", ")) + "</div>" : "") +
+        (earned.length ? "<div class='stat'>Proof on file: " + esc(earned.join(" · ")) + "</div>" : "") +
+        "</div>";
+    }).join("") : "<p class='sub'>No coins issued yet.</p>";
+
+    var inbox = ((d.openOffers || {}).inbox || []);
+    var outbox = ((d.openOffers || {}).outbox || []);
+    var offerHtml = function (o) {
+      return "<div class='stat'>" + esc(o.summary || (o.offerUnits + " for " + o.requestUnits)) +
+        (o.needsMyDecision ? " <b class='band-meme'>· Needs your decision</b>" : "") + "</div>";
+    };
+    $("offers").innerHTML = (inbox.length || outbox.length)
+      ? "<div class='card'>" +
+        (inbox.length ? "<div><b>Inbox</b></div>" + inbox.map(offerHtml).join("") : "") +
+        (outbox.length ? "<div style='margin-top:6px'><b>Outbox</b></div>" + outbox.map(offerHtml).join("") : "") +
+        "</div>"
+      : "<p class='sub'>No open offers.</p>";
+
+    var wl = d.watchlist || [];
+    $("watchlist").innerHTML = wl.length
+      ? "<div class='card'>" + wl.map(function (c) {
+          return "<div class='stat'>" + esc(c.name) + " (" + esc(c.ticker) + ") — " +
+            esc((c.display && c.display.price) || "") + "</div>";
+        }).join("") + "</div>"
+      : "<p class='sub'>Nothing watched yet.</p>";
+
+    var act = d.recentActivity || [];
+    $("activity").innerHTML = act.length
+      ? "<div class='card'>" + act.map(function (a) {
+          return "<div class='stat'>" + esc(a.summary || a.kind || "") + "</div>";
+        }).join("") + "</div>"
+      : "<p class='sub'>No recent activity.</p>";
+
+    var acts = d.quickActions || [];
+    $("actions").innerHTML = acts.map(function (a) {
+      return "<button type='button' class='secondary' data-act='" + esc(a.label) + "'>" + esc(a.label) + "</button>";
+    }).join("");
+    document.querySelectorAll("#actions button").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        PhaseBridge.sendMessage(btn.dataset.act).catch(function () {});
+      });
+    });
+
+    $("loading").style.display = "none";
+    $("view").style.display = "block";
+  }
+
+  PhaseBridge.onToolInput(function (params) {
+    if (params && params.arguments && params.arguments.widgetToken) ctx.widgetToken = params.arguments.widgetToken;
+  });
+  PhaseBridge.onToolResult(function (result) {
+    var err = PhaseBridge.resultError(result);
+    if (err) {
+      $("loading").innerHTML = "<h2>Couldn't load your dashboard</h2><p class='sub'>" + esc(err) + "</p>";
+      return;
+    }
+    var d = PhaseBridge.resultData(result);
+    if (d) {
+      if (d.widgetToken) ctx.widgetToken = d.widgetToken;
+      render(d);
+    }
+  });
+
+  $("refreshBtn").addEventListener("click", function () {
+    var btn = $("refreshBtn");
+    btn.disabled = true;
+    btn.textContent = "Refreshing…";
+    PhaseBridge.callServerTool("show_dashboard", { widgetToken: ctx.widgetToken }).then(function (result) {
+      var err = PhaseBridge.resultError(result);
+      if (err) throw new Error(err);
+      var d = PhaseBridge.resultData(result);
+      if (d) render(d);
+    }).catch(function (e) {
+      var el = $("err");
+      el.textContent = (e && e.message) || "Refresh failed.";
+      el.style.display = "block";
+    }).finally(function () {
+      btn.disabled = false;
+      btn.textContent = "Refresh";
+    });
+  });
+
+  $("dashBtn").addEventListener("click", function () {
+    PhaseBridge.openLink(DASH_URL).catch(function () {
+      var el = $("linkFallback");
+      el.textContent = "Open this link: " + DASH_URL;
+      el.style.display = "block";
+    });
+  });
+
+  PhaseBridge.connect().then(function (info) {
+    PhaseBridge.autoResize();
+    if (info.standalone) {
+      setTimeout(function () {
+        if ($("loading").style.display !== "none") {
+          $("loading").innerHTML = "<h2>Open this inside your AI agent</h2>" +
+            "<p class='sub'>Your dashboard loads here once your agent signs you in.</p>";
+        }
+      }, 500);
+    }
+  });
+})();
+</script>
+</body>
+</html>

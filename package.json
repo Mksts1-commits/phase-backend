@@ -16,6 +16,8 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^2.0.3",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
     "bitcoinjs-lib": "^7.0.2",
@@ -24,6 +26,7 @@
     "pg": "^8.23.0",
     "sharp": "^0.35.4",
     "tiny-secp256k1": "^2.2.4",
-    "tsx": "^4.16.5"
+    "tsx": "^4.16.5",
+    "zod": "^4.6.7"
   }
 }

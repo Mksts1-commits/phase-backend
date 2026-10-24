@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase — Sign the Issuer Agreement</title>
+<style><!-- PHASE_CSS --></style>
+</head>
+<body>
+<div id="loading"><h2>Loading your agreement…</h2><p class="sub">This takes a moment.</p></div>
+
+<div id="signView" style="display:none">
+  <h2>Issuer Agreement</h2>
+  <p class="sub">This is the real legal agreement for your coin. Read it, then sign with your full legal name.</p>
+  <div class="card" id="recap"></div>
+  <div class="scrollpane" id="agreementText"></div>
+  <label for="legalName">Full legal name (as it appears on your ID)</label>
+  <input id="legalName" type="text" maxlength="120" placeholder="e.g. Walter K" autocomplete="off">
+  <label style="font-weight:400"><input id="agreeBox" type="checkbox" style="width:auto"> I have read and agree to this Issuer Agreement.</label>
+  <div class="err" id="err"></div>
+  <div class="row" style="margin-top:12px">
+    <button id="signBtn" type="button" disabled>Sign &amp; approve</button>
+  </div>
+  <p class="note">Signing locks the supply and terms above. Nothing mints until you confirm on the next screen.</p>
+</div>
+
+<div id="confirmView" style="display:none">
+  <h2>Confirm before minting</h2>
+  <p class="sub">Agreement signed. Check everything once — this is the last step before your coin exists.</p>
+  <div class="card" id="confirmRecap"></div>
+  <div class="err" id="err2"></div>
+  <div class="row" style="margin-top:12px">
+    <button id="mintBtn" type="button">Mint it</button>
+    <button id="editBtn" type="button" class="secondary">Edit setup</button>
+  </div>
+</div>
+
+<div id="successView" style="display:none">
+  <h2>🎉 Your coin is live</h2>
+  <div class="card" id="successRecap"></div>
+  <div class="row">
+    <button id="dashBtn" type="button">Open my dashboard</button>
+    <button id="mktBtn" type="button" class="secondary">Open the marketplace</button>
+  </div>
+  <p class="note" id="linkFallback" style="display:none"></p>
+</div>
+
+<script><!-- PHASE_BRIDGE --></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = PhaseBridge.escapeHtml;
+  var fmtInt = function (n) { return Math.round(Number(n) || 0).toLocaleString("en-US"); };
+  var fmtUsd = function (n) {
+    return "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  var DASH_URL = "https://mksts1-commits.github.io/phase-android/app/?tab=dashboard";
+  var MKT_URL = "https://mksts1-commits.github.io/phase-android/app/?tab=market";
+
+  var ctx = { draftId: null, widgetToken: null, issuerAddress: null, recap: null, agreementText: "" };
+
+  function show(id) {
+    ["loading", "signView", "confirmView", "successView"].forEach(function (x) {
+      $(x).style.display = x === id ? "block" : "none";
+    });
+  }
+  function showErr(elId, msg) {
+    var el = $(elId);
+    el.textContent = msg;
+    el.style.display = "block";
+  }
+  function recapHtml(r) {
+    return "<div class='stat'>Coin: <b>" + esc(r.name) + " (" + esc(r.ticker) + ")</b></div>" +
+      "<div class='stat'>Price: <b>" + fmtUsd(r.priceUsd) + "</b> · Market cap: <b>" + fmtUsd(r.marketCapUsd) + "</b></div>" +
+      "<div class='stat'>Total supply: <b>" + fmtInt(r.totalShares) + "</b></div>" +
+      "<div class='stat'>You keep: <b>" + fmtInt(r.retainedShares) + " (" + r.retainedPct + "%)</b> · Public float: <b>" + fmtInt(r.floatShares) + " (" + r.publicPct + "%)</b></div>" +
+      (r.signedBy ? "<div class='stat'>Signed by: <b>" + esc(r.signedBy) + "</b></div>" : "");
+  }
+  function updateSignButton() {
+    var ok = $("agreeBox").checked && $("legalName").value.trim().length >= 2;
+    $("signBtn").disabled = !ok;
+  }
+  function friendlyErr(e, fallback) {
+    var m = (e && e.message) || fallback;
+    if (/unauthorized|sign in/i.test(m)) return "Session expired — ask your agent to reopen this agreement.";
+    if (/already_minted/i.test(m)) return "This coin is already minted.";
+    if (/supply_mismatch/i.test(m)) return "The supply changed after signing — ask your agent to create a fresh draft.";
+    if (/signature_required/i.test(m)) return "Sign the agreement first.";
+    return m;
+  }
+
+  function applyData(d) {
+    if (!d) return;
+    if (d.draftId) ctx.draftId = d.draftId;
+    if (d.widgetToken) ctx.widgetToken = d.widgetToken;
+    if (d.issuerAddress) ctx.issuerAddress = d.issuerAddress;
+    if (d.recap) ctx.recap = d.recap;
+    if (d.agreementText) ctx.agreementText = d.agreementText;
+    if (d.legalName && !$("legalName").value) $("legalName").value = d.legalName;
+    if (d.signedBy && ctx.recap) ctx.recap.signedBy = d.signedBy;
+    if (ctx.recap) {
+      $("recap").innerHTML = recapHtml(ctx.recap);
+      $("confirmRecap").innerHTML = recapHtml(ctx.recap);
+    }
+    if (ctx.agreementText) $("agreementText").textContent = ctx.agreementText;
+    if (ctx.recap && ctx.agreementText) {
+      if (d.status === "signed" || d.signed) { show("confirmView"); }
+      else if (d.status === "minted" && d.coin) { showSuccess(d.coin); }
+      else { show("signView"); }
+    }
+  }
+
+  PhaseBridge.onToolInput(function (params) {
+    if (params && params.arguments) applyData(params.arguments);
+  });
+  PhaseBridge.onToolResult(function (result) {
+    if (PhaseBridge.resultError(result)) {
+      $("loading").innerHTML = "<h2>Couldn't load the agreement</h2><p class='sub'>" +
+        esc(PhaseBridge.resultError(result)) + "</p>";
+      return;
+    }
+    applyData(PhaseBridge.resultData(result));
+  });
+
+  $("agreeBox").addEventListener("change", updateSignButton);
+  $("legalName").addEventListener("input", updateSignButton);
+
+  $("signBtn").addEventListener("click", function () {
+    var legalName = $("legalName").value.trim();
+    if (legalName.length < 2) { showErr("err", "Type your full legal name to sign."); return; }
+    var btn = $("signBtn");
+    btn.disabled = true;
+    btn.textContent = "Signing…";
+    $("err").style.display = "none";
+    PhaseBridge.callServerTool("sign_agreement", {
+      draftId: ctx.draftId, legalName: legalName, accepted: true,
+      issuerCategory: "individual", widgetToken: ctx.widgetToken,
+      idempotencyKey: "widget-sign-" + ctx.draftId,
+    }).then(function (result) {
+      var err = PhaseBridge.resultError(result);
+      if (err) throw new Error(err);
+      var d = PhaseBridge.resultData(result) || {};
+      if (ctx.recap) ctx.recap.signedBy = legalName;
+      $("confirmRecap").innerHTML = recapHtml(ctx.recap || d.recap || {});
+      show("confirmView");
+    }).catch(function (e) {
+      btn.disabled = false;
+      btn.textContent = "Sign & approve";
+      showErr("err", friendlyErr(e, "Signing failed. Try again."));
+    });
+  });
+
+  $("editBtn").addEventListener("click", function () {
+    var t = ctx.recap ? ctx.recap.ticker : "my coin";
+    PhaseBridge.sendMessage("I'd like to change the setup for " + t + " before minting — reopen the coin setup.").catch(function () {});
+  });
+
+  $("mintBtn").addEventListener("click", function () {
+    var btn = $("mintBtn");
+    btn.disabled = true;
+    btn.textContent = "Minting…";
+    $("err2").style.display = "none";
+    PhaseBridge.callServerTool("mint_coin", {
+      draftId: ctx.draftId, widgetToken: ctx.widgetToken,
+      issuerAddress: ctx.issuerAddress,
+      idempotencyKey: "widget-mint-" + ctx.draftId,
+    }).then(function (result) {
+      var err = PhaseBridge.resultError(result);
+      if (err) throw new Error(err);
+      var d = PhaseBridge.resultData(result) || {};
+      showSuccess(d.coin || d);
+    }).catch(function (e) {
+      btn.disabled = false;
+      btn.textContent = "Mint it";
+      showErr("err2", friendlyErr(e, "Minting failed. Try again."));
+    });
+  });
+
+  function showSuccess(coin) {
+    var r = ctx.recap || {};
+    var name = (coin && coin.name) || r.name || "";
+    var ticker = (coin && coin.ticker) || r.ticker || "";
+    $("successRecap").innerHTML =
+      "<div class='stat'>Coin: <b>" + esc(name) + " (" + esc(ticker) + ")</b></div>" +
+      "<div class='stat'>Price: <b>" + fmtUsd(r.priceUsd) + "</b> · Market cap: <b>" + fmtUsd(r.marketCapUsd) + "</b></div>" +
+      "<div class='stat'>Total supply: <b>" + fmtInt(r.totalShares) + "</b> · You keep <b>" + fmtInt(r.retainedShares) + " (" + r.retainedPct + "%)</b></div>" +
+      ((coin && coin.chainId) ? "<div class='stat'>Chain: <b class='num'>" + esc(coin.chainId) + "</b></div>" : "");
+    show("successView");
+  }
+
+  function openOrShow(url) {
+    PhaseBridge.openLink(url).catch(function () {
+      var el = $("linkFallback");
+      el.textContent = "Open this link: " + url;
+      el.style.display = "block";
+    });
+  }
+  $("dashBtn").addEventListener("click", function () { openOrShow(DASH_URL); });
+  $("mktBtn").addEventListener("click", function () { openOrShow(MKT_URL); });
+
+  PhaseBridge.connect().then(function (info) {
+    PhaseBridge.autoResize();
+    if (info.standalone) {
+      setTimeout(function () {
+        if ($("loading").style.display !== "none") {
+          $("loading").innerHTML = "<h2>Open this inside your AI agent</h2>" +
+            "<p class='sub'>This widget needs the agreement data your agent passes it.</p>";
+        }
+      }, 500);
+    }
+  });
+})();
+</script>
+</body>
+</html>

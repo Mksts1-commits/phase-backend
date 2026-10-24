@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase — Marketplace</title>
+<style><!-- PHASE_CSS --></style>
+</head>
+<body>
+<div id="loading"><h2>Loading the marketplace…</h2></div>
+
+<div id="view" style="display:none">
+  <h2>Marketplace</h2>
+  <p class="sub" id="countLine"></p>
+  <div class="row">
+    <input id="search" type="text" placeholder="Search coins…" autocomplete="off" style="flex:1">
+    <button id="searchBtn" type="button" class="secondary">Search</button>
+  </div>
+  <div class="row" id="cats" style="margin-top:8px"></div>
+
+  <div id="grid"></div>
+  <p class="note" id="moreNote" style="display:none"></p>
+
+  <div id="detail" style="display:none"></div>
+
+  <div class="err" id="err"></div>
+  <button id="mktBtn" type="button" class="secondary" style="margin-top:16px">Open the marketplace in the web app</button>
+  <p class="note" id="linkFallback" style="display:none"></p>
+</div>
+
+<script><!-- PHASE_BRIDGE --></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = PhaseBridge.escapeHtml;
+  var fmtInt = function (n) { return Math.round(Number(n) || 0).toLocaleString("en-US"); };
+  var fmtUsd = function (n) {
+    return "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  var MKT_URL = "https://mksts1-commits.github.io/phase-android/app/?tab=market";
+
+  var ctx = { widgetToken: null, coins: [], categories: [], total: 0, nextCursor: null, category: "", search: "" };
+  var current = null; /* coin in detail view */
+
+  var BAND_NAME = { meme: "Meme", emerging: "Emerging", established: "Established", proven: "Proven", phase: "Phase" };
+  function bandColor(band) {
+    if (band === "meme") return "#d92d20";
+    if (band === "phase") return "#2f7bff";
+    return "#16a34a";
+  }
+  function tagClass(band) {
+    if (band === "meme") return "tag meme";
+    if (band === "phase") return "tag phase";
+    return "tag";
+  }
+
+  function renderCats() {
+    var html = "<button type='button' class='chip" + (ctx.category === "" ? " active" : "") + "' data-cat=''>All</button>";
+    ctx.categories.forEach(function (c) {
+      html += "<button type='button' class='chip" + (ctx.category === c.name ? " active" : "") + "' data-cat='" + esc(c.name) + "'>" +
+        esc(c.name) + " (" + c.count + ")</button>";
+    });
+    $("cats").innerHTML = html;
+    document.querySelectorAll("#cats .chip").forEach(function (ch) {
+      ch.addEventListener("click", function () {
+        ctx.category = ch.dataset.cat;
+        reload();
+      });
+    });
+  }
+
+  function renderGrid() {
+    $("detail").style.display = "none";
+    $("countLine").textContent = ctx.total + " coin" + (ctx.total === 1 ? "" : "s") +
+      (ctx.search ? " matching “" + ctx.search + "”" : "") +
+      (ctx.category ? " in " + ctx.category : "");
+    $("moreNote").style.display = ctx.nextCursor ? "block" : "none";
+    if (ctx.nextCursor) {
+      $("moreNote").textContent = "Showing the first " + ctx.coins.length + " — ask your agent for more.";
+    }
+    if (!ctx.coins.length) {
+      $("grid").innerHTML = "<p class='sub'>No coins match.</p>";
+      return;
+    }
+    $("grid").innerHTML = ctx.coins.map(function (c) {
+      var leg = c.legitimacy || {};
+      var band = leg.band || "emerging";
+      var col = bandColor(band);
+      return "<div class='card' data-id='" + esc(c.id) + "' style='cursor:pointer;border-left:4px solid " + col + "'>" +
+        "<div class='row'><b>" + esc(c.name) + "</b> <span class='" + tagClass(band) + "'>" + esc(c.ticker) + "</span>" +
+        "<span style='flex:1'></span><span class='stat'><b class='num'>" + (leg.score != null ? leg.score : 0) + "%</b> " +
+        esc(BAND_NAME[band] || band) + "</span></div>" +
+        "<div class='stat'>" + esc(c.tagline || c.category || "Sovereign coin on Phase") + "</div>" +
+        "<div class='stat'>" + fmtUsd(c.priceUsd) + " · Market cap " + fmtUsd(c.marketCapUsd) +
+        " · Float available <b class='num'>" + fmtInt(c.floatAvailable) + "</b></div>" +
+        "</div>";
+    }).join("");
+    document.querySelectorAll("#grid .card").forEach(function (el) {
+      el.addEventListener("click", function () { showDetail(el.dataset.id); });
+    });
+  }
+
+  function render(d) {
+    ctx.coins = d.coins || [];
+    ctx.categories = d.categories || [];
+    ctx.total = d.total || 0;
+    ctx.nextCursor = d.nextCursor || null;
+    if (d.widgetToken) ctx.widgetToken = d.widgetToken;
+    renderCats();
+    renderGrid();
+    $("loading").style.display = "none";
+    $("view").style.display = "block";
+  }
+
+  function reload() {
+    $("grid").innerHTML = "<p class='sub'>Loading…</p>";
+    PhaseBridge.callServerTool("show_marketplace", {
+      search: ctx.search || undefined, category: ctx.category || undefined,
+      widgetToken: ctx.widgetToken || undefined,
+    }).then(function (result) {
+      var err = PhaseBridge.resultError(result);
+      if (err) throw new Error(err);
+      var d = PhaseBridge.resultData(result);
+      if (d) render(d);
+    }).catch(function (e) {
+      var el = $("err");
+      el.textContent = (e && e.message) || "Couldn't load the marketplace.";
+      el.style.display = "block";
+    });
+  }
+
+  function showDetail(id) {
+    var c = null;
+    for (var i = 0; i < ctx.coins.length; i++) if (ctx.coins[i].id === id) c = ctx.coins[i];
+    if (!c) return;
+    current = c;
+    var leg = c.legitimacy || {};
+    var band = leg.band || "emerging";
+    var earned = (leg.earned || []).map(function (e) { return e.label; });
+    var flags = (leg.redFlags || []).map(function (f) { return f.label; });
+    var links = "";
+    if (c.websiteUrl) links += "<button type='button' class='secondary' data-url='" + esc(c.websiteUrl) + "'>Website</button> ";
+    (c.socialProfiles || []).forEach(function (s) {
+      links += "<button type='button' class='secondary' data-url='" + esc(s.url) + "'>" + esc(s.platform || "Social") + "</button> ";
+    });
+    var watchBtn = "";
+    var buyBlock = "";
+    if (ctx.widgetToken) {
+      watchBtn = "<button type='button' class='secondary' id='watchBtn'>" +
+        (c.watchlisted ? "Unwatch" : "Watch") + "</button> ";
+      buyBlock = "<h3>Buy " + esc(c.ticker) + "</h3>" +
+        "<div class='row'><input id='qty' type='number' min='1' step='1' value='10' style='width:110px'>" +
+        "<span class='stat'>coins · <b id='gross'>" + fmtUsd(10 * Number(c.priceUsd)) + "</b></span></div>" +
+        "<p class='note'>You pay the gross amount; the Phase fee is deducted from the coins you receive.</p>" +
+        "<div class='err' id='buyErr'></div><div class='ok' id='buyOk'></div>" +
+        "<button type='button' id='buyBtn' style='background:" + bandColor(band) + "'>Buy</button>";
+    } else {
+      buyBlock = "<p class='sub'>To buy, ask your agent to sign you up first — then this coin's Buy button appears here.</p>" +
+        "<button type='button' class='secondary' id='signupBtn'>Ask my agent to sign me up</button>";
+    }
+    $("detail").innerHTML =
+      "<div class='card'>" +
+      "<button type='button' class='secondary' id='backBtn' style='padding:6px 12px'>← Back</button>" +
+      "<div class='row' style='margin-top:8px'><b>" + esc(c.name) + "</b> <span class='" + tagClass(band) + "'>" + esc(c.ticker) + "</span>" +
+      "<span style='flex:1'></span><span class='stat'><b class='num'>" + (leg.score != null ? leg.score : 0) + "%</b> " +
+      esc(BAND_NAME[band] || band) + "</span></div>" +
+      "<div class='stat'>" + esc(c.tagline || "") + "</div>" +
+      (c.valueThesis ? "<div class='stat'>" + esc(c.valueThesis) + "</div>" : "") +
+      "<div class='stat'>" + fmtUsd(c.priceUsd) + " · Market cap " + fmtUsd(c.marketCapUsd) +
+      " · Supply " + fmtInt(c.supply) + " · Float available <b class='num'>" + fmtInt(c.floatAvailable) + "</b></div>" +
+      (flags.length ? "<div class='stat band-meme'>Capped at Meme: " + esc(flags.join(", ")) + "</div>" : "") +
+      (earned.length ? "<div class='stat'>Proof on file: " + esc(earned.join(" · ")) + "</div>" : "") +
+      (links ? "<div class='row' style='margin-top:8px'>" + links + "</div>" : "") +
+      "<div class='row' style='margin-top:10px'>" + watchBtn + "</div>" +
+      buyBlock +
+      "</div>";
+    $("grid").innerHTML = "";
+    $("detail").style.display = "block";
+    $("backBtn").addEventListener("click", renderGrid);
+    document.querySelectorAll("#detail [data-url]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        PhaseBridge.openLink(btn.dataset.url).catch(function () {});
+      });
+    });
+    var wb = $("watchBtn");
+    if (wb) wb.addEventListener("click", function () {
+      var watching = wb.textContent.trim() === "Watch";
+      wb.disabled = true;
+      PhaseBridge.callServerTool("set_watchlist", {
+        coinId: c.id, watch: watching, widgetToken: ctx.widgetToken,
+      }).then(function (result) {
+        var err = PhaseBridge.resultError(result);
+        if (err) throw new Error(err);
+        c.watchlisted = watching;
+        wb.textContent = watching ? "Unwatch" : "Watch";
+      }).catch(function (e) {
+        var el = $("err");
+        el.textContent = (e && e.message) || "Couldn't update your watchlist.";
+        el.style.display = "block";
+      }).finally(function () { wb.disabled = false; });
+    });
+    var qb = $("qty");
+    if (qb) qb.addEventListener("input", function () {
+      var q = Math.max(1, Math.floor(Number(qb.value) || 1));
+      $("gross").textContent = fmtUsd(q * Number(c.priceUsd));
+    });
+    var bb = $("buyBtn");
+    if (bb) bb.addEventListener("click", function () {
+      var q = Math.max(1, Math.floor(Number($("qty").value) || 1));
+      var gross = Math.round(q * Number(c.priceUsd) * 100) / 100;
+      if (!confirm("Buy " + q + " " + c.ticker + " for " + fmtUsd(gross) + "?")) return;
+      bb.disabled = true;
+      bb.textContent = "Buying…";
+      $("buyErr").style.display = "none";
+      $("buyOk").style.display = "none";
+      PhaseBridge.callServerTool("buy_coin", {
+        chainId: c.chainId, amountUsd: gross, widgetToken: ctx.widgetToken,
+      }).then(function (result) {
+        var err = PhaseBridge.resultError(result);
+        if (err) throw new Error(err);
+        var d = PhaseBridge.resultData(result) || {};
+        var ok = $("buyOk");
+        ok.textContent = "Bought " + q + " " + c.ticker + " for " + fmtUsd(gross) +
+          (d.unitsReceived ? " — you received " + fmtInt(d.unitsReceived) + " after fees." : ".");
+        ok.style.display = "block";
+        bb.textContent = "Bought";
+      }).catch(function (e) {
+        bb.disabled = false;
+        bb.textContent = "Buy";
+        var el = $("buyErr");
+        var m = (e && e.message) || "Purchase failed.";
+        if (/insufficient|balance/i.test(m)) m = "Not enough USD in your cash account. Add funds to continue.";
+        if (/insufficient_float/i.test(m)) m = "The public float doesn't have enough coins left for this purchase.";
+        el.textContent = m;
+        el.style.display = "block";
+      });
+    });
+    var sb = $("signupBtn");
+    if (sb) sb.addEventListener("click", function () {
+      PhaseBridge.sendMessage("I'd like to sign up for Phase so I can buy coins.").catch(function () {});
+    });
+  }
+
+  PhaseBridge.onToolInput(function (params) {
+    if (params && params.arguments) {
+      if (params.arguments.search !== undefined) ctx.search = params.arguments.search || "";
+      if (params.arguments.category !== undefined) ctx.category = params.arguments.category || "";
+      if (params.arguments.widgetToken) ctx.widgetToken = params.arguments.widgetToken;
+    }
+  });
+  PhaseBridge.onToolResult(function (result) {
+    var err = PhaseBridge.resultError(result);
+    if (err) {
+      $("loading").innerHTML = "<h2>Couldn't load the marketplace</h2><p class='sub'>" + esc(err) + "</p>";
+      return;
+    }
+    var d = PhaseBridge.resultData(result);
+    if (d) render(d);
+  });
+
+  $("searchBtn").addEventListener("click", function () {
+    ctx.search = $("search").value.trim();
+    reload();
+  });
+  $("search").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { ctx.search = $("search").value.trim(); reload(); }
+  });
+  $("mktBtn").addEventListener("click", function () {
+    PhaseBridge.openLink(MKT_URL).catch(function () {
+      var el = $("linkFallback");
+      el.textContent = "Open this link: " + MKT_URL;
+      el.style.display = "block";
+    });
+  });
+
+  PhaseBridge.connect().then(function (info) {
+    PhaseBridge.autoResize();
+    if (info.standalone) {
+      setTimeout(function () {
+        if ($("loading").style.display !== "none") {
+          $("loading").innerHTML = "<h2>Open this inside your AI agent</h2>" +
+            "<p class='sub'>The marketplace loads here with live coins.</p>";
+        }
+      }, 500);
+    }
+  });
+})();
+</script>
+</body>
+</html>
