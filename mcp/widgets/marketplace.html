@@ -149,14 +149,11 @@
     if (ctx.widgetToken) {
       watchBtn = "<button type='button' class='secondary' id='watchBtn'>" +
         (c.watchlisted ? "Unwatch" : "Watch") + "</button> ";
-      buyBlock = "<h3>Buy " + esc(c.ticker) + "</h3>" +
-        "<div class='row'><input id='qty' type='number' min='1' step='1' value='10' style='width:110px'>" +
-        "<span class='stat'>coins · <b id='gross'>" + fmtUsd(10 * Number(c.priceUsd)) + "</b></span></div>" +
-        "<p class='note'>You pay the gross amount; the Phase fee is deducted from the coins you receive.</p>" +
-        "<div class='err' id='buyErr'></div><div class='ok' id='buyOk'></div>" +
-        "<button type='button' id='buyBtn' style='background:" + bandColor(band) + "'>Buy</button>";
+      buyBlock = "<h3>Trade " + esc(c.ticker) + "</h3>" +
+        "<p class='note'>Trading happens in the Phase web app, under your own login — the agent never places a trade for you.</p>" +
+        "<button type='button' id='tradeBtn' style='background:" + bandColor(band) + "'>Open the Marketplace to trade</button>";
     } else {
-      buyBlock = "<p class='sub'>To buy, ask your agent to sign you up first — then this coin's Buy button appears here.</p>" +
+      buyBlock = "<p class='sub'>To trade, sign up first, then open the Marketplace in the web app and trade under your own login.</p>" +
         "<button type='button' class='secondary' id='signupBtn'>Ask my agent to sign me up</button>";
     }
     $("detail").innerHTML =
@@ -200,45 +197,13 @@
         el.style.display = "block";
       }).finally(function () { wb.disabled = false; });
     });
-    var qb = $("qty");
-    if (qb) qb.addEventListener("input", function () {
-      var q = Math.max(1, Math.floor(Number(qb.value) || 1));
-      $("gross").textContent = fmtUsd(q * Number(c.priceUsd));
-    });
-    var bb = $("buyBtn");
-    if (bb) bb.addEventListener("click", function () {
-      var q = Math.max(1, Math.floor(Number($("qty").value) || 1));
-      var gross = Math.round(q * Number(c.priceUsd) * 100) / 100;
-      if (!confirm("Buy " + q + " " + c.ticker + " for " + fmtUsd(gross) + "?")) return;
-      bb.disabled = true;
-      bb.textContent = "Buying…";
-      $("buyErr").style.display = "none";
-      $("buyOk").style.display = "none";
-      PhaseBridge.callServerTool("buy_coin", {
-        chainId: c.chainId, amountUsd: gross, widgetToken: ctx.widgetToken,
-      }).then(function (result) {
-        var err = PhaseBridge.resultError(result);
-        if (err) throw new Error(err);
-        var d = PhaseBridge.resultData(result) || {};
-        var ok = $("buyOk");
-        ok.textContent = "Bought " + q + " " + c.ticker + " for " + fmtUsd(gross) +
-          (d.unitsReceived ? " — you received " + fmtInt(d.unitsReceived) + " after fees." : ".");
-        ok.style.display = "block";
-        bb.textContent = "Bought";
-      }).catch(function (e) {
-        bb.disabled = false;
-        bb.textContent = "Buy";
-        var el = $("buyErr");
-        var m = (e && e.message) || "Purchase failed.";
-        if (/insufficient|balance/i.test(m)) m = "Not enough USD in your cash account. Add funds to continue.";
-        if (/insufficient_float/i.test(m)) m = "The public float doesn't have enough coins left for this purchase.";
-        el.textContent = m;
-        el.style.display = "block";
-      });
+    var tb = $("tradeBtn");
+    if (tb) tb.addEventListener("click", function () {
+      PhaseBridge.openLink("https://mksts1-commits.github.io/phase-android/app/?tab=market").catch(function () {});
     });
     var sb = $("signupBtn");
     if (sb) sb.addEventListener("click", function () {
-      PhaseBridge.sendMessage("I'd like to sign up for Phase so I can buy coins.").catch(function () {});
+      PhaseBridge.sendMessage("I'd like to sign up for Phase so I can trade coins.").catch(function () {});
     });
   }
 

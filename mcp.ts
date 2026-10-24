@@ -626,55 +626,11 @@ function buildServer(): McpServer {
     },
   );
 
-  // --- 4c. Buy (widget-only) --------------------------------------------------
-  registerAppTool(
-    server,
-    "buy_coin",
-    {
-      title: "Buy coin",
-      description:
-        "Buy a coin from its public float with USD cash. Widget-only: called from the marketplace widget after the user confirms quantity and gross amount. Buyer pays the gross USD; the Phase fee is deducted from the coins received.",
-      inputSchema: z.object({
-        chainId: z.string(),
-        amountUsd: z.number(),
-        buyerAddress: z.string().optional(),
-        ...accessArgs,
-      }),
-      _meta: { ui: { resourceUri: `${MCP_UI_BASE}/marketplace.html`, visibility: ["app"] } },
-    },
-    async (args) => {
-      const caller = await resolveCaller(args);
-      if (!caller) return errResult("sign_in_required", "Sign in required.");
-      if (!caller.restToken) {
-        return errResult("access_token_required", "Buying requires the user's Phase session. Ask your agent to reopen the marketplace.");
-      }
-      if (!Number.isFinite(args.amountUsd) || args.amountUsd <= 0) {
-        return errResult("invalid_amount", "amountUsd must be a positive number.");
-      }
-      const buyerAddress = args.buyerAddress ?? (await userIssuerAddress(caller.userId));
-      if (!buyerAddress) {
-        return errResult(
-          "buyer_address_required",
-          "No Phase wallet address on file for this user. Ask the agent for the user's Phase wallet address (ph1...) and pass it as buyerAddress.",
-        );
-      }
-      const r = await restCall("POST", "/api/v1/trades/buy", {
-        token: caller.restToken,
-        body: { chainId: args.chainId, buyerAddress, amountUsd: args.amountUsd },
-        headers: { "idempotency-key": randomUUID() },
-      });
-      if (!r.ok) return restErrToResult(r);
-      const fee = r.body?.fee ?? {};
-      return okResult({
-        bought: true,
-        tradeId: r.body?.trade?.id ?? null,
-        unitsReceived: fee.buyerReceivesUnits ?? null,
-        grossUnits: fee.grossUnits ?? null,
-        amountUsd: r.body?.trade?.amountUsd ?? args.amountUsd,
-        buyerBalanceUsd: r.body?.buyerBalanceUsd ?? null,
-      });
-    },
-  );
+  // NOTE: there is deliberately NO buy/sell tool. Trading is manual:
+  // the user logs into the Phase web app and places trades themselves,
+  // under their own login. The marketplace widget links them there
+  // instead of executing a trade. This keeps trade accountability with
+  // the user, not the agent.
 
   // --- UI resources -----------------------------------------------------------
   const widgets: Array<[string, string, string]> = [

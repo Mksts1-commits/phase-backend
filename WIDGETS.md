@@ -40,9 +40,10 @@ SDK refuses to reconnect an already-connected instance).
 | `sign_agreement` | app only | `draftId`, `legalName`, `accepted: true`, `issuerCategory?`, `title?`, `idempotencyKey?`, `accessToken?`, `widgetToken?` | Signs the draft via the existing `POST /api/v1/issuance/sign` route (in-process). |
 | `mint_coin` | app only | `draftId`, `issuerAddress?`, `idempotencyKey?`, `accessToken?`, `widgetToken?` | Mints a signed draft via the existing `POST /api/v1/issuance/mint` route (in-process). `issuerAddress` falls back to the user's own coin address; without any address it fails closed with `issuer_address_required`. |
 | `show_dashboard` | model + app | `accessToken?`, `widgetToken?` | Returns the agent dashboard payload and renders the dashboard widget. |
-| `show_marketplace` | model + app | `search?`, `category?`, `limit?`, `cursor?`, `accessToken?`, `widgetToken?` | Returns the agent marketplace payload and renders the marketplace widget. Public without a token (no `mine`/`watchlisted` flags, no buy/watch). |
+| `show_marketplace` | model + app | `search?`, `category?`, `limit?`, `cursor?`, `accessToken?`, `widgetToken?` | Returns the agent marketplace payload and renders the marketplace widget. Public without a token (no `mine`/`watchlisted` flags, no watch). Trading is manual: the detail view links to the web app Marketplace. |
 | `set_watchlist` | app only | `coinId`, `watch: boolean`, `accessToken?`, `widgetToken?` | Watches/unwatches via the existing agent watchlist routes (in-process). |
-| `buy_coin` | app only | `chainId`, `amountUsd`, `buyerAddress?`, `accessToken?`, `widgetToken?` | Buys from the public float via the existing `POST /api/v1/trades/buy` route (in-process). Buyer pays gross USD; the Phase fee is deducted from the coins received. `buyerAddress` falls back to the user's own coin address. |
+
+There is deliberately no buy/sell tool. Trading is manual by design (2026-10-24 decision): the user logs into the Phase web app and places trades themselves, under their own login. The widget never executes a trade.
 
 `show_*` tools carry `_meta.ui.resourceUri` (plus the legacy
 `_meta["ui/resourceUri"]` key, auto-populated by the SDK). Action tools
@@ -120,12 +121,12 @@ have, and a widget token on its own is useless against REST endpoints.
 
 ## Known limits
 
-- **Buy settlement requires Postgres.** The buy money leg is
-  Postgres-only in the existing marketplace code, so in hermetic
-  memory mode `buy_coin` dispatches correctly (auth, validation, and
-  address resolution all run) but stops at the settlement boundary —
-  the same pre-existing limitation as the `test-swap` sandbox failures.
-  On Render (real `DATABASE_URL`) it settles normally.
+- **No trade execution.** The widget never buys or sells; its detail
+  view links to the web app Marketplace where the user trades under
+  their own login. Note: cash buys on live currently cannot settle for
+  new buyers — `POST /api/v1/trades/buy` debits `market_balances` USD,
+  which nothing on live credits (deposits land in separate ledgers).
+  That gap is intentionally left open while trading stays manual.
 - **PHASE balance is null in memory mode.** `bonus.ts` has no memory
   fallback, so the dashboard widget shows PHASE 0 without Postgres.
   Balances resolve normally on Render.

@@ -85,8 +85,22 @@ there, just run the text flow.
   their dashboard. Same content and honesty rules as the text version
   (list value vs. realized value, "nothing sold yet" at 0).
 - **Marketplace** — `show_marketplace`: whenever they browse coins.
-  Watch, unwatch, and buy all run through the widget's confirm steps;
-  a buy still needs their explicit confirmation, exactly as in text.
+  Watch and unwatch run through the widget. Trading does not: the
+  widget sends the user to the web app to trade under their own login
+  (see "Trading is manual" below).
+
+## Trading is manual — the agent never executes a trade
+
+Your user logs into the Phase web app and places every trade
+themselves, under their own login:
+
+- Marketplace: https://mksts1-commits.github.io/phase-android/app/?tab=market
+
+You research, compare, and recommend. You watchlist. You never buy,
+sell, or swap on their behalf — not through a widget, not through the
+API, not because they typed "go". When they decide to trade, send them
+the Marketplace link and tell them to log in and place it themselves.
+Trade accountability stays with the user, full stop.
 
 Never paste your Bearer <redacted> into a widget or a message — the
 `show_*` tools hand the widget a short-lived scoped token instead.
@@ -316,9 +330,11 @@ GET /api/v1/trades/quote?chainId=<chainId>&amountUsd=100
 GET /api/v1/trades/swap-quote?chainId=<a>&offerChainId=<b>
 ```
 
-**Buying requires an account.** To purchase, your user signs up (step 1
-above) and buys through the Phase app, or via `POST /api/v1/trades/buy`
-with their Bearer token.
+**Trading is manual.** To purchase, your user signs up (step 1
+above), logs into the Phase web app, and places the trade themselves:
+https://mksts1-commits.github.io/phase-android/app/?tab=market — you
+never execute a trade on their behalf (see "Trading is manual" above).
+Quotes and listings here are for research only..
 
 ### Due diligence before recommending a purchase
 
@@ -343,7 +359,9 @@ for them — investigate first. The marketplace gives you everything public:
    trading history, say so plainly.
 
 Recommend, don't push. Lay out what you found — the numbers, the documents,
-the gaps — and let your user decide.
+the gaps — and let your user decide. When they decide to trade, send
+them the Marketplace link (above) to place it themselves under their
+own login.
 
 ## See your dashboard
 
