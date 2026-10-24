@@ -94,6 +94,17 @@ Content-Type: application/json
 Save the token. **Hand the email + password to your user** — it's their
 account, not yours. Do not retain credentials longer than needed.
 
+**Send them their web app links — once, right here.** The moment
+signup succeeds, include both links in that message so your user always
+has a way back in (same account they just created):
+
+- Marketplace: https://mksts1-commits.github.io/phase-android/app/?tab=market
+- Dashboard: https://mksts1-commits.github.io/phase-android/app/?tab=dashboard
+
+Send both once at signup. After that, repeat the relevant one whenever
+you show your user their dashboard or browse the marketplace with them
+(see those sections below).
+
 Right after signup, the backend emails the user a confirmation code.
 Tell them in ONE line: "Sent a confirmation code to your email — drop
 it here when it lands and I'll confirm you; we can keep going
@@ -248,6 +259,9 @@ these same details):
 Then point them onward:
 
 - Their coin appears in the Phase app's Dashboard and Marketplace.
+- Send the web app links again with the celebration — Dashboard:
+  https://mksts1-commits.github.io/phase-android/app/?tab=dashboard ·
+  Marketplace: https://mksts1-commits.github.io/phase-android/app/?tab=market
 - Public coin directory: `GET /api/v1/marketplace/coins`
 - They can edit tagline, website, and social links later (owner-only).
 
@@ -336,6 +350,9 @@ How to present it:
   couldn't be loaded instead of presenting the view as complete.
 - Everything is test-mode. Balances and prices are Phase test rails,
   not real-money value — frame them that way.
+- **Close with the standing link** every time you render the
+  dashboard: "Open your dashboard anytime:
+  https://mksts1-commits.github.io/phase-android/app/?tab=dashboard"
 
 ## Phase Cred — help your user climb
 
@@ -455,7 +472,8 @@ and website, plus `display` strings ready to show.
 Present a short shortlist — headline, price, market cap, float
 available — and follow the due-diligence rules above before saying
 anything evaluative about a coin. Page with `cursor` only if your user
-asks for more.
+asks for more. End with the web link: "Browse it yourself anytime:
+https://mksts1-commits.github.io/phase-android/app/?tab=market"
 
 ## Tweak things for your user
 
