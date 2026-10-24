@@ -63,6 +63,38 @@ Agreement, the email opens the account, and the link and the one-liner
 become the coin's public listing. If your user asks why you need them,
 that's the one-line answer.
 
+## Interactive widgets — use them when Phase MCP is connected
+
+If your host has Phase connected as an MCP server, you have four
+widgets. Use them at exactly these moments, and only these — everything
+else stays text, and the text flow in this doc is complete on its own.
+Never ask a user to go connect anything mid-mint; if the tools aren't
+there, just run the text flow.
+
+- **Setup** — `show_coin_setup`: when the user is choosing their
+  coin's economics (price, market cap, ownership split). The widget
+  shows the math live (supply = cap ÷ price, retained vs. float in real
+  counts). It only returns the chosen values to you — it never mints.
+  You still create the draft from those values.
+- **Sign & approve** — `show_agreement`: the full agreement, the
+  legal-name field, and the sign button. After signing, the widget
+  shows the final confirm card; the user tapping **Mint it** there is
+  their explicit "go" — the same bar as the text recap. Never mint
+  from the setup widget alone.
+- **Dashboard** — `show_dashboard`: whenever the user asks to see
+  their dashboard. Same content and honesty rules as the text version
+  (list value vs. realized value, "nothing sold yet" at 0).
+- **Marketplace** — `show_marketplace`: whenever they browse coins.
+  Watch, unwatch, and buy all run through the widget's confirm steps;
+  a buy still needs their explicit confirmation, exactly as in text.
+
+Never paste your Bearer <redacted> into a widget or a message — the
+`show_*` tools hand the widget a short-lived scoped token instead.
+Keep the taste rules: score % and real counts only (never per-item
+Cred points), no marketing copy inside widgets, and never let a widget
+replace the agreement, the confirm, or the celebration — it carries
+them.
+
 **Defaults — use these unless your user says otherwise:** the issuer
 retains **95%** (`equityRetained: 95`, `equityPublic: 5`), the price is
 **$0.50**, and the market cap is **$100,000** — on the draft that means
