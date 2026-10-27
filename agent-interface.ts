@@ -26,8 +26,11 @@
  *          coin profile edits live in coin-edit.ts.)
  *
  * SECURITY: the userId for every private route comes ONLY from the
- * Bearer session (resolveBearerUserId). A userId in the body or query
- * is not read at all — not even as a hint.
+ * Bearer token (resolveBearerAuth in oauth.ts). A userId in the body or query
+ * is not read at all — not even as a hint. Session Bearer tokens keep full
+ * access; OAuth Bearer tokens must carry the route's scope
+ * (dashboard read:dashboard, watchlist reads read:coins, watchlist writes
+ * write:watchlist, offer cancel write:offers) or the call 403s.
  *
  * CONSENT: these are plain APIs; the consent rule lives in the agent
  * protocol (connector-api-spec.md §E and AGENT.md): an agent must state
@@ -40,7 +43,7 @@
  * Mounted from phase-backend.ts: mountAgentInterfaceRoutes({ route, sendJson, HttpError })
  */
 import { getPool } from "./db.js";
-import { resolveBearerUserId } from "./auth.js";
+import { resolveBearerAuth } from "./oauth.js";
 import { getPhaseBalance } from "./bonus.js";
 import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
 import { getMarketStore, type MarketTrade } from "./marketplace.js";
@@ -326,14 +329,22 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
     sendJson(ctx.res, statusCode, { ...ENVELOPE, error: code, message });
   };
 
-  /** The ONLY source of userId on private agent routes: the Bearer session. */
-  const requireUserId = async (ctx: Ctx): Promise<string> => {
-    const authed = await resolveBearerUserId(ctx.req.headers);
+  /** The ONLY source of userId on private agent routes: the Bearer token.
+   *  Session tokens keep full access; OAuth tokens must carry the given
+   *  scope (403 insufficient_scope otherwise). */
+  const requireScopedUserId = async (ctx: Ctx, scope: string): Promise<string> => {
+    const authed = await resolveBearerAuth(ctx.req.headers);
     if (!authed) throw new HttpError(401, "unauthorized", "Sign in required.");
-    return authed;
+    if (authed.kind === "oauth" && !authed.scopes.includes(scope)) {
+      throw new HttpError(403, "insufficient_scope", `This token lacks the ${scope} scope.`);
+    }
+    return authed.userId;
   };
   const optionalUserId = async (ctx: Ctx): Promise<string | null> => {
-    try { return await resolveBearerUserId(ctx.req.headers); } catch { return null; }
+    try {
+      const authed = await resolveBearerAuth(ctx.req.headers);
+      return authed ? authed.userId : null;
+    } catch { return null; }
   };
   const clientIp = (ctx: Ctx): string => clientIpFromHeaders(ctx.req.headers);
 
@@ -352,7 +363,7 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
   // failing the whole view when one subsystem is unavailable.
   route("GET", "/api/v1/agent/dashboard", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "read:dashboard");
       if (!checkRateLimit(`agent-dash:${userId}`, 60, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many requests — wait a moment and try again.");
       }
@@ -580,7 +591,7 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
   // --- GET /api/v1/agent/watchlist ---
   route("GET", "/api/v1/agent/watchlist", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "read:coins");
       const ids = await (await getWatchlistStore()).list(userId);
       const coins: CoinCard[] = [];
       for (const id of ids) {
@@ -594,7 +605,7 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
   // --- POST /api/v1/agent/watchlist --- { coinId } (id or chainId)
   route("POST", "/api/v1/agent/watchlist", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:watchlist");
       if (!checkRateLimit(`agent-watch:${userId}`, 30, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many requests — wait a moment and try again.");
       }
@@ -614,7 +625,7 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
   // --- DELETE /api/v1/agent/watchlist/:coinId --- (idempotent)
   route("DELETE", "/api/v1/agent/watchlist/:coinId", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:watchlist");
       const coin = await resolveCoin(ctx.params.coinId);
       const store = await getWatchlistStore();
       // Remove by canonical id when the coin resolves; otherwise try the
@@ -633,7 +644,7 @@ export function mountAgentInterfaceRoutes(deps: AgentInterfaceMountDeps): void {
   // by status, so a replayed cancel returns 409 instead of double-acting.
   route("POST", "/api/v1/offers/:id/cancel", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:offers");
       if (!checkRateLimit(`agent-offers:${userId}`, 30, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many requests — wait a moment and try again.");
       }

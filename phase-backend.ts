@@ -62,6 +62,7 @@ import { mountIssuanceRoutes } from "./issuance.js";
 import { mountCoinEditRoutes } from "./coin-edit.js";
 import { mountBonusRoutes } from "./bonus.js";
 import { mountAuthRoutes, resolveBearerUserId } from "./auth.js";
+import { mountOAuthRoutes } from "./oauth.js";
 import { mountSovereignLedgerRoutes } from "./sovereign-ledger.js";
 import { mountBridgePublicRoutes } from "./bridge-public.js";
 import { mountBridgeRoutes } from "./bridge.js";
@@ -1130,6 +1131,12 @@ mountBonusRoutes({ route, sendJson, HttpError, resolveBearerUserId });
 // issuance_users table. Mounted right after issuance so /auth/* is live
 // alongside the issuance flow that depends on it.
 mountAuthRoutes({ route, sendJson, HttpError });
+
+// --- OAuth 2.0 authorization server (see oauth.ts) ---
+// RFC 6749 code flow + PKCE, RFC 7591 registration, RFC 8414 metadata,
+// RFC 7009 revocation. Mounted right after account auth; /oauth/* and
+// /.well-known/* do not collide with any /api/v1/* route.
+mountOAuthRoutes({ route, sendJson, HttpError });
 
 // --- 8e-vi. Sovereign ledger (Phase 1 MVP; see sovereign-ledger.ts) ---
 // Per-user sovereign chains with Ed25519-signed transactions. Write-through

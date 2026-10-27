@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto";
 import { getPool } from "./db.js";
 import { getChainBalance, isValidAddress, auditLog } from "./sovereign-ledger-core.js";
 import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
-import { resolveBearerUserId } from "./auth.js";
+import { resolveBearerAuth } from "./oauth.js";
 import { clientIpFromHeaders } from "./rate-limit.js";
 import { getFeeConfig, coinUnitsToDecimal, decimalToCoinUnits, calculateTradeFeeWithWaiver, toMicroUnits } from "./fee.js";
 import {
@@ -342,15 +342,21 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
     sendJson(ctx.res, statusCode, { ...NETWORK_ENVELOPE, error: code, message });
   };
 
-  const requireUserId = async (ctx: OffersCtx): Promise<string> => {
-    const authed = await resolveBearerUserId(ctx.req.headers);
+  /** Scoped variant for offers endpoints: session tokens keep full access;
+   *  OAuth tokens must carry write:offers. The claimed-userId guard above
+   *  is preserved. */
+  const requireScopedUserId = async (ctx: OffersCtx, scope: string): Promise<string> => {
+    const authed = await resolveBearerAuth(ctx.req.headers);
     if (!authed) throw new HttpError(401, "unauthorized", "Sign in required.");
+    if (authed.kind === "oauth" && !authed.scopes.includes(scope)) {
+      throw new HttpError(403, "insufficient_scope", `This token lacks the ${scope} scope.`);
+    }
     const body = asRecord(ctx.body);
     const claimed = str(body.userId) || str(ctx.query.get("userId"));
-    if (claimed && claimed !== authed) {
+    if (claimed && claimed !== authed.userId) {
       throw new HttpError(403, "forbidden", "This request is for a different user.");
     }
-    return authed;
+    return authed.userId;
   };
 
   const idempotencyKey = (ctx: OffersCtx, fallback: string): string => {
@@ -370,7 +376,7 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
         throw new HttpError(429, "rate_limited", "Too many offers — wait a minute and try again.");
       }
       const body = asRecord(ctx.body);
-      const buyerUserId = await requireUserId(ctx);
+      const buyerUserId = await requireScopedUserId(ctx, "write:offers");
       const targetChainId = str(body.targetChainId);
       if (!targetChainId) throw new HttpError(400, "missing_target_chain_id", "Body must include targetChainId.");
       const offerChainId = str(body.offerChainId);
@@ -486,7 +492,7 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
   // Offers where the caller is the seller (needs their accept/counter/decline).
   route("GET", "/api/v1/offers/inbox", async (ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:offers");
       const activeOnly = (ctx.query.get("filter") || "active") !== "all";
       const store = await getStoreAsync();
       const offers = await store.listBySeller(userId, activeOnly);
@@ -501,7 +507,7 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
   // Offers the caller sent (pending with seller, or countered back to them).
   route("GET", "/api/v1/offers/outbox", async (ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:offers");
       const activeOnly = (ctx.query.get("filter") || "active") !== "all";
       const store = await getStoreAsync();
       const offers = await store.listByBuyer(userId, activeOnly);
@@ -519,7 +525,7 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
       if (!checkRateLimit(`offerdecide:${clientIp(ctx)}`, 30, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many decisions — wait a minute and try again.");
       }
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:offers");
       const store = await getStoreAsync();
       const offer = await store.getById(str(ctx.params.id));
       if (!offer) throw new HttpError(404, "offer_not_found", "No offer with that id.");
@@ -587,7 +593,7 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
       if (!checkRateLimit(`offerdecide:${clientIp(ctx)}`, 30, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many decisions — wait a minute and try again.");
       }
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:offers");
       const body = asRecord(ctx.body);
       const store = await getStoreAsync();
       const offer = await store.getById(str(ctx.params.id));
@@ -629,7 +635,7 @@ export function mountOffersRoutes(deps: OffersMountDeps): void {
       if (!checkRateLimit(`offerdecide:${clientIp(ctx)}`, 30, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many decisions — wait a minute and try again.");
       }
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:offers");
       const store = await getStoreAsync();
       const offer = await store.getById(str(ctx.params.id));
       if (!offer) throw new HttpError(404, "offer_not_found", "No offer with that id.");

@@ -36,6 +36,7 @@ import {
   type LegitimacyScore,
 } from "./legitimacy.js";
 import { resolveBearerUserId } from "./auth.js";
+import { resolveBearerAuth } from "./oauth.js";
 import { checkRateLimit as sharedCheckRateLimit, clientIpFromHeaders } from "./rate-limit.js";
 import {
   getFeeConfig,
@@ -1209,6 +1210,23 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
     return authed;
   };
 
+  /** Scoped variant for trade writes (buy/swap): session tokens keep full
+   *  access; OAuth tokens must carry write:orders. The claimed-userId
+   *  guard above is preserved. */
+  const requireScopedUserId = async (ctx: MarketplaceCtx, scope: string): Promise<string> => {
+    const authed = await resolveBearerAuth(ctx.req.headers);
+    if (!authed) throw new HttpError(401, "unauthorized", "Sign in required.");
+    if (authed.kind === "oauth" && !authed.scopes.includes(scope)) {
+      throw new HttpError(403, "insufficient_scope", `This token lacks the ${scope} scope.`);
+    }
+    const body = asRecord(ctx.body);
+    const claimed = str(body.userId) || str(ctx.query.get("userId"));
+    if (claimed && claimed !== authed.userId) {
+      throw new HttpError(403, "forbidden", "This request is for a different user.");
+    }
+    return authed.userId;
+  };
+
   const idempotencyKey = (ctx: MarketplaceCtx, fallback: string): string => {
     const header = ctx.req.headers["idempotency-key"] ?? ctx.req.headers["x-idempotency-key"];
     const h = Array.isArray(header) ? header[0] : header;
@@ -1228,7 +1246,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         throw new HttpError(429, "rate_limited", "Too many buy attempts — wait a minute and try again.");
       }
       const body = asRecord(ctx.body);
-      const buyerUserId = await requireUserId(ctx);
+      const buyerUserId = await requireScopedUserId(ctx, "write:orders");
       const chainId = str(body.chainId);
       if (!chainId) throw new HttpError(400, "missing_chain_id", "Body must include chainId.");
       const buyerAddress = str(body.buyerAddress);
@@ -1722,7 +1740,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         throw new HttpError(429, "rate_limited", "Too many swap attempts — wait a minute and try again.");
       }
       const body = asRecord(ctx.body);
-      const buyerUserId = await requireUserId(ctx);
+      const buyerUserId = await requireScopedUserId(ctx, "write:orders");
       const chainId = str(body.chainId);
       if (!chainId) throw new HttpError(400, "missing_chain_id", "Body must include chainId (the target coin's chain).");
       const buyerAddress = str(body.buyerAddress);

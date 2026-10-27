@@ -16,6 +16,7 @@ import { auditLog } from "./sovereign-ledger-core.js";
 import { createChain, LedgerError, getChainBalance, PUBLIC_FLOAT_ADDRESS } from "./sovereign-ledger-core.js";
 import { getPool } from "./db.js";
 import { resolveBearerUserId } from "./auth.js";
+import { resolveBearerAuth } from "./oauth.js";
 import { checkRateLimit } from "./rate-limit.js";
 import { ensureLinkVerdicts, normalizeLinkStatus, type LinkStatusMap } from "./link-check.js";
 
@@ -682,6 +683,23 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
     return authed;
   };
 
+  /** Scoped variant for issuance writes (draft/sign/mint): session tokens
+   *  keep full access; OAuth tokens must carry write:listings. The
+   *  claimed-userId guard above is preserved. */
+  const requireScopedUserId = async (ctx: IssuanceCtx, scope: string): Promise<string> => {
+    const authed = await resolveBearerAuth(ctx.req.headers);
+    if (!authed) throw new HttpError(401, "unauthorized", "Sign in required.");
+    if (authed.kind === "oauth" && !authed.scopes.includes(scope)) {
+      throw new HttpError(403, "insufficient_scope", `This token lacks the ${scope} scope.`);
+    }
+    const body = asRecord(ctx.body);
+    const claimed = str(body.userId) || str(ctx.query.get("userId"));
+    if (claimed && claimed !== authed.userId) {
+      throw new HttpError(403, "forbidden", "This request is for a different user.");
+    }
+    return authed.userId;
+  };
+
   /** Optional idempotency key for draft/sign: header or body, null when absent. */
   const idemKeyOf = (ctx: IssuanceCtx, body: Record<string, unknown>): string | null => {
     const header = ctx.req.headers["idempotency-key"] ?? ctx.req.headers["x-idempotency-key"];
@@ -706,7 +724,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
   route("POST", "/api/v1/issuance/draft", async (ctx) => {
     try {
       const body = asRecord(ctx.body);
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:listings");
       if (!checkRateLimit(`issuance:draft:${userId}`, 10, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many draft requests — wait a minute and try again.");
       }
@@ -813,7 +831,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
   route("POST", "/api/v1/issuance/sign", async (ctx) => {
     try {
       const body = asRecord(ctx.body);
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:listings");
       if (!checkRateLimit(`issuance:sign:${userId}`, 10, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many sign requests — wait a minute and try again.");
       }
@@ -888,7 +906,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
   route("POST", "/api/v1/issuance/mint", async (ctx) => {
     try {
       const body = asRecord(ctx.body);
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:listings");
       if (!checkRateLimit(`issuance:mint:${userId}`, 10, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many mint requests — wait a minute and try again.");
       }

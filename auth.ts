@@ -485,6 +485,22 @@ export async function resolveBearerUserId(
   return session ? session.userId : null;
 }
 
+// Password verification for the OAuth authorize page (oauth.ts): the
+// authorize form reuses the same account store and scrypt check as login,
+// but never creates a session and never logs the password. Returns the
+// account when the email exists and the password matches, else null — the
+// same generic outcome for unknown email vs wrong password as login.
+export async function verifyAccountPassword(
+  email: string,
+  password: string
+): Promise<AuthAccount | null> {
+  const s = await store();
+  const account = await s.findByEmail(email.trim().toLowerCase());
+  if (!account || !account.passwordHash) return null;
+  if (!verifyPassword(password, account.passwordHash)) return null;
+  return { id: account.id, email: account.email, name: account.name, createdAt: account.createdAt };
+}
+
 export function mountAuthRoutes(deps: AuthMountDeps): void {
   const { route, sendJson } = deps;
   const HttpError = deps.HttpError;

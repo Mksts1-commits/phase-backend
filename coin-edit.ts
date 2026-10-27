@@ -26,6 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { getPool } from "./db.js";
 import { resolveBearerUserId } from "./auth.js";
+import { resolveBearerAuth } from "./oauth.js";
 import { ensureLinkVerdicts, normalizeLinkStatus } from "./link-check.js";
 
 export interface CoinEditMountDeps {
@@ -115,6 +116,17 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
     return authed;
   };
 
+  /** Scoped variant for coin-profile writes: session tokens keep full
+   *  access; OAuth tokens must carry write:coin-profile. */
+  const requireScopedUserId = async (ctx: Ctx, scope: string): Promise<string> => {
+    const authed = await resolveBearerAuth(ctx.req.headers);
+    if (!authed) throw new HttpError(401, "unauthorized", "Sign in required.");
+    if (authed.kind === "oauth" && !authed.scopes.includes(scope)) {
+      throw new HttpError(403, "insufficient_scope", `This token lacks the ${scope} scope.`);
+    }
+    return authed.userId;
+  };
+
   /** The coin row, or 404. Ownership is checked by the caller. */
   async function getCoin(id: string): Promise<{ id: string; userId: string; draftId: string | null; linkStatus: unknown }> {
     const pool = getPool();
@@ -135,7 +147,7 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
   // --- PATCH /api/v1/coins/:id ---
   route("PATCH", "/api/v1/coins/:id", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:coin-profile");
       const coin = await requireOwner(ctx, userId);
       const body = asRecord(ctx.body);
 
@@ -230,7 +242,7 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
   // --- POST /api/v1/coins/:id/documents ---
   route("POST", "/api/v1/coins/:id/documents", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:coin-profile");
       const coin = await requireOwner(ctx, userId);
       const body = asRecord(ctx.body);
 
@@ -319,7 +331,7 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
   // --- DELETE /api/v1/coins/:id/documents/:docId ---
   route("DELETE", "/api/v1/coins/:id/documents/:docId", async (ctx: Ctx) => {
     try {
-      const userId = await requireUserId(ctx);
+      const userId = await requireScopedUserId(ctx, "write:coin-profile");
       await requireOwner(ctx, userId);
       const pool = getPool();
       const r = await pool.query(
