@@ -227,3 +227,43 @@ Watchlist storage: `user_watchlist` table (migration 021).
 - **Honesty.** All payloads are test-mode. Never present balances,
   prices, or stake values as real-money value, and never promise
   returns.
+
+---
+
+# Addendum — OAuth 2.0 authorization server (2026-10-27, LIVE)
+
+Status update: the OAuth flow this spec required is implemented and live
+at `https://phase-backend.onrender.com` (commit `ed42d3d`, migration 027).
+The session Bearer tokens from the earlier addendum keep working unchanged;
+OAuth tokens are the path for third-party connector clients.
+
+- `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata
+  (issuer exactly `https://phase-backend.onrender.com`)
+- `POST /oauth/register` — RFC 7591 dynamic client registration
+  (`client_name` + `redirect_uris`, https only except http loopback;
+  `token_endpoint_auth_method: "none"` for public clients)
+- `GET /oauth/authorize` — authorization code flow + PKCE (S256 required
+  for public clients); server-rendered login + consent page showing the
+  client name and each requested scope in plain language
+- `POST /oauth/authorize` — login + consent decision (JSON, returns the
+  redirect URL with `code` + `state`); codes are single-use, 10-minute
+  expiry, bound to client + redirect URI + PKCE challenge
+- `POST /oauth/token` — `authorization_code` and `refresh_token` grants
+  (access 1h, refresh 30d with rotation); secrets, codes, and tokens are
+  stored only as SHA-256 hashes
+- `POST /oauth/revoke` — RFC 7009, always 200
+
+Scope enforcement on the agent endpoints: session tokens keep full access;
+OAuth tokens must carry the route's scope or the call 403s with
+`insufficient_scope` — dashboard `read:dashboard`, watchlist reads
+`read:coins`, watchlist writes `write:watchlist`, offers `write:offers`,
+coin edits `write:coin-profile`, issuance `write:listings`, trades
+`write:orders`. Marketplace reads stay public.
+
+Verified live end-to-end 2026-10-27: metadata → registration → signup →
+authorize → code exchange → OAuth dashboard 200 → out-of-scope write 403
+→ code-reuse rejection. Local suite `test-oauth.ts`: 31 passed, 0 failed.
+
+Still gated (not cleared by this work): directory submission remains gated
+on legal sign-off for agent-initiated issuance. The manual-trading rule
+(agent never buys/sells/swaps on a user's behalf) is unchanged.
