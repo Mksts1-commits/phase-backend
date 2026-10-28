@@ -60,6 +60,7 @@ export const OAUTH_SCOPES = [
   "write:coin-profile",
   "write:watchlist",
   "write:offers",
+  "write:float",
 ] as const;
 export type OAuthScope = (typeof OAUTH_SCOPES)[number];
 
@@ -72,6 +73,7 @@ export const SCOPE_DESCRIPTIONS: Record<OAuthScope, string> = {
   "write:coin-profile": "Edit your coin's profile and documents",
   "write:watchlist": "Manage your watchlist",
   "write:offers": "Create and manage swap offers",
+  "write:float": "Increase your coin's public float",
 };
 
 function sha256hex(s: string): string {

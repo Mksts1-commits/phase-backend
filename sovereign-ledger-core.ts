@@ -728,7 +728,10 @@ function parseAmount(raw: unknown, field = 'amount'): bigint {
 
 function applyTransfer(chain: ChainRecord, tx: Tx): void {
   const { to, amount, memo } = tx.payload as { to: string; amount: string; memo?: string };
-  if (!isValidAddress(to)) throw new LedgerError('invalid_recipient', 'recipient address is invalid');
+  // The public float address is a platform-custodied vanity address
+  // ('ph1FLOAT...', not base58) — a legitimate recipient for
+  // operator-settled float flows even though isValidAddress rejects it.
+  if (to !== PUBLIC_FLOAT_ADDRESS && !isValidAddress(to)) throw new LedgerError('invalid_recipient', 'recipient address is invalid');
   if (memo !== undefined && (typeof memo !== 'string' || memo.length > 256)) {
     throw new LedgerError('invalid_memo', 'memo must be a string up to 256 chars');
   }
@@ -1049,7 +1052,10 @@ async function settleOperatorTransfer(
   if (!chain) throw new LedgerError('chain_not_found', 'unknown chain', 404);
   if (chain.status !== 'active') throw new LedgerError('chain_not_active', 'chain is not active', 409);
   if (!isValidAddress(from)) throw new LedgerError('invalid_sender', 'sender address is invalid');
-  if (!isValidAddress(to)) throw new LedgerError('invalid_recipient', 'recipient address is invalid');
+  // Same platform-custody carve-out as applyTransfer: the public float
+  // address is a vanity address, not a base58 keypair address, but it is
+  // a legitimate operator-settled recipient (float increases).
+  if (to !== PUBLIC_FLOAT_ADDRESS && !isValidAddress(to)) throw new LedgerError('invalid_recipient', 'recipient address is invalid');
   const amt = parseAmount(amountBaseUnits, 'amount');
   return chainLock.withLock(chainId, async () => {
     const fromEntry = store.getBalanceEntry(chainId, from);

@@ -125,6 +125,12 @@ export interface IssuanceCoin {
   totalShares: number | null;
   /** Shares retained by the issuer = totalShares * draft.equityRetained / 100. */
   retainedShares: number | null;
+  /** Cumulative shares released to the public float after mint via
+   *  POST /api/v1/coins/:id/float/increase (migration 028). The
+   *  genesis float is totalShares - retainedShares; the live total
+   *  float is genesis float + floatReleasedShares. Null for rows
+   *  written before migration 028 (treated as 0). */
+  floatReleasedShares: number | null;
   /** Issuer's website URL (business/asset listings). Null if not provided. */
   websiteUrl: string | null;
   /** Coin logo image URL (migration 024): copied from the draft at mint,
@@ -243,6 +249,17 @@ export function sha256Hex(s: string): string {
 // Store: Postgres when DATABASE_URL is set, in-memory fallback otherwise.
 // ---------------------------------------------------------------------------
 
+/** One float-increase idempotency record (migration 028). A replay of
+ *  the same (coin, Idempotency-Key) returns the original tx_id without
+ *  a second transfer. */
+export interface FloatIncreaseRequest {
+  coinId: string;
+  idempotencyKey: string;
+  txId: string;
+  shares: number;
+  createdAt: string;
+}
+
 export interface IssuanceStore {
   ensureUser(userId: string, email?: string): Promise<void>;
   createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceDraft>;
@@ -260,6 +277,11 @@ export interface IssuanceStore {
   /** Persist the coin's link-verdict map (lazy score-time checks write
    *  their verdicts back so each URL is checked at most once). */
   updateCoinLinkStatus(coinId: string, linkStatus: LinkStatusMap): Promise<void>;
+  getCoinById(id: string): Promise<IssuanceCoin | null>;
+  /** Add to the coin's cumulative released float (migration 028). */
+  addFloatReleased(coinId: string, shares: number): Promise<void>;
+  getFloatIncreaseRequest(coinId: string, key: string): Promise<FloatIncreaseRequest | null>;
+  recordFloatIncreaseRequest(r: Omit<FloatIncreaseRequest, "createdAt">): Promise<FloatIncreaseRequest>;
   listCoinsByUser(userId: string): Promise<IssuanceCoin[]>;
   /** Every issued coin, newest first — powers the public marketplace directory. */
   listAllCoins(): Promise<IssuanceCoin[]>;
@@ -437,6 +459,43 @@ class PgIssuanceStore implements IssuanceStore {
       [JSON.stringify(linkStatus), coinId]);
   }
 
+  async getCoinById(id: string): Promise<IssuanceCoin | null> {
+    const rows = await this.q<IssuanceCoin>(`SELECT ${COIN_COLS} FROM issuance_coins WHERE id = $1`, [id]);
+    return rows[0] ?? null;
+  }
+
+  async addFloatReleased(coinId: string, shares: number): Promise<void> {
+    await this.q(
+      `UPDATE issuance_coins SET float_released_shares = float_released_shares + $2 WHERE id = $1`,
+      [coinId, shares]
+    );
+  }
+
+  async getFloatIncreaseRequest(coinId: string, key: string): Promise<FloatIncreaseRequest | null> {
+    const rows = await this.q<FloatIncreaseRequest>(
+      `SELECT coin_id AS "coinId", idempotency_key AS "idempotencyKey",
+              tx_id AS "txId", shares, created_at AS "createdAt"
+       FROM float_increase_requests WHERE coin_id = $1 AND idempotency_key = $2`,
+      [coinId, key]
+    );
+    return rows[0] ?? null;
+  }
+
+  async recordFloatIncreaseRequest(r: Omit<FloatIncreaseRequest, "createdAt">): Promise<FloatIncreaseRequest> {
+    const rows = await this.q<FloatIncreaseRequest>(
+      `INSERT INTO float_increase_requests (coin_id, idempotency_key, tx_id, shares)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (coin_id, idempotency_key) DO NOTHING
+       RETURNING coin_id AS "coinId", idempotency_key AS "idempotencyKey",
+                 tx_id AS "txId", shares, created_at AS "createdAt"`,
+      [r.coinId, r.idempotencyKey, r.txId, r.shares]
+    );
+    if (rows[0]) return rows[0];
+    const existing = await this.getFloatIncreaseRequest(r.coinId, r.idempotencyKey);
+    if (!existing) throw new Error("float increase request lost after insert conflict");
+    return existing;
+  }
+
   async listCoinsByUser(userId: string): Promise<IssuanceCoin[]> {
     return this.q<IssuanceCoin>(
       `SELECT ${COIN_COLS} FROM issuance_coins WHERE user_id = $1 ORDER BY created_at DESC`,
@@ -456,6 +515,7 @@ const COIN_COLS = `id, draft_id AS "draftId", user_id AS "userId",
   mint_address AS "mintAddress", tx_signature AS "txSignature",
   supply, decimals, price_usd AS "priceUsd", issuer_address AS "issuerAddress",
   category, total_shares AS "totalShares", retained_shares AS "retainedShares",
+  float_released_shares AS "floatReleasedShares",
   website_url AS "websiteUrl", logo_url AS "logoUrl", link_status AS "linkStatus",
   network, idempotency_key AS "idempotencyKey",
   created_at AS "createdAt"`;
@@ -468,6 +528,7 @@ class MemoryIssuanceStore implements IssuanceStore {
   private sigsByKey = new Map<string, IssuanceSignature>();
   private coins = new Map<string, IssuanceCoin>();
   private coinsByKey = new Map<string, IssuanceCoin>();
+  private floatRequests = new Map<string, FloatIncreaseRequest>();
 
   async ensureUser(userId: string, email?: string): Promise<void> {
     if (!this.users.has(userId)) this.users.set(userId, { email });
@@ -527,6 +588,28 @@ class MemoryIssuanceStore implements IssuanceStore {
   async updateCoinLinkStatus(coinId: string, linkStatus: LinkStatusMap): Promise<void> {
     const coin = this.coins.get(coinId);
     if (coin) coin.linkStatus = linkStatus;
+  }
+
+  async getCoinById(id: string): Promise<IssuanceCoin | null> {
+    return this.coins.get(id) ?? null;
+  }
+
+  async addFloatReleased(coinId: string, shares: number): Promise<void> {
+    const coin = this.coins.get(coinId);
+    if (coin) coin.floatReleasedShares = (coin.floatReleasedShares ?? 0) + shares;
+  }
+
+  async getFloatIncreaseRequest(coinId: string, key: string): Promise<FloatIncreaseRequest | null> {
+    return this.floatRequests.get(`${coinId}:${key}`) ?? null;
+  }
+
+  async recordFloatIncreaseRequest(r: Omit<FloatIncreaseRequest, "createdAt">): Promise<FloatIncreaseRequest> {
+    const k = `${r.coinId}:${r.idempotencyKey}`;
+    const existing = this.floatRequests.get(k);
+    if (existing) return existing;
+    const row: FloatIncreaseRequest = { ...r, createdAt: new Date().toISOString() };
+    this.floatRequests.set(k, row);
+    return row;
   }
   async listCoinsByUser(userId: string): Promise<IssuanceCoin[]> {
     return [...this.coins.values()].filter((c) => c.userId === userId)
@@ -604,6 +687,65 @@ function store(): Promise<IssuanceStore> {
 /** Shared store accessor for sibling modules (marketplace settlement). */
 export function getIssuanceStore(): Promise<IssuanceStore> {
   return getStoreAsync();
+}
+
+/** Shared float/sold math for GET /api/v1/issuance/coins and the agent
+ *  dashboard's coinPosition — one implementation so both stay consistent.
+ *
+ *  Genesis float = totalShares - retainedShares. Total float adds the
+ *  cumulative post-mint releases (floatReleasedShares, migration 028).
+ *  Sold = totalFloat - live float-address balance, clamped
+ *  [0, totalFloat]. publicFloatUnits is the TOTAL float (genesis +
+ *  released), not just the genesis float: after a release it grows, so
+ *  sold stays consistent. The old formula (genesis float minus balance)
+ *  understated sold to zero-or-negative once released shares sold.
+ *
+ *  NOTE on async settlement: floatReleasedShares increments when the
+ *  increase is QUEUED, but the float balance only moves when the block
+ *  confirms (~2s later). In that window sold transiently includes the
+ *  pending release; it resolves at confirmation. */
+export function coinFloatPosition(c: IssuanceCoin): {
+  availableUnits: string | null;
+  publicFloatUnits: string | null;
+  publicFloatSoldUnits: string | null;
+  floatAvailableUnits: string | null;
+  floatReleasedUnits: string | null;
+  realizationRatio: number | null;
+} {
+  let availableUnits: string | null = null;
+  let floatAvailableUnits: string | null = null;
+  let publicFloatUnits: string | null = null;
+  let publicFloatSoldUnits: string | null = null;
+  let realizationRatio: number | null = null;
+  const released = c.floatReleasedShares != null
+    ? BigInt(Math.round(Number(c.floatReleasedShares)))
+    : 0n;
+  const floatReleasedUnits = released.toString();
+  try {
+    if (c.issuerAddress) {
+      // getChainBalance returns whole-coin base units on this ledger.
+      availableUnits = BigInt(getChainBalance(c.mintAddress, c.issuerAddress)).toString();
+    }
+  } catch { /* chain unknown on this node — leave null */ }
+  try {
+    const total = c.totalShares != null ? BigInt(Math.round(Number(c.totalShares))) : null;
+    const retained = c.retainedShares != null ? BigInt(Math.round(Number(c.retainedShares))) : null;
+    if (total != null && retained != null && total > 0n) {
+      const initialFloat = total - retained;
+      const totalFloat = initialFloat + released;
+      if (totalFloat > 0n) {
+        const floatUnits = BigInt(getChainBalance(c.mintAddress, PUBLIC_FLOAT_ADDRESS));
+        floatAvailableUnits = floatUnits.toString();
+        let sold = totalFloat - floatUnits;
+        if (sold < 0n) sold = 0n;
+        if (sold > totalFloat) sold = totalFloat;
+        publicFloatUnits = totalFloat.toString();
+        publicFloatSoldUnits = sold.toString();
+        realizationRatio = Number(sold) / Number(totalFloat);
+      }
+    }
+  } catch { /* leave null */ }
+  return { availableUnits, publicFloatUnits, publicFloatSoldUnits, floatAvailableUnits, floatReleasedUnits, realizationRatio };
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,6 +1156,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         category: draft.category || null,
         totalShares,
         retainedShares: Math.round((totalShares * draft.equityRetained) / 100),
+        floatReleasedShares: 0,
         websiteUrl: draft.websiteUrl || null,
         logoUrl: draft.logoUrl || null,
         linkStatus: coinLinkStatus,
@@ -1039,41 +1182,16 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
       const userId = await requireUserId(ctx);
       const _st2 = await store();
       const coins = await _st2.listCoinsByUser(userId);
-      // Enrich with live position data the Dashboard needs:
+      // Enrich with live position data the Dashboard needs (shared
+      // coinFloatPosition helper — same math as the agent dashboard):
       //  - availableUnits: the issuer's current on-chain balance of this coin
       //    (their real, spendable stake — replaces any local guess).
+      //  - floatAvailableUnits: the public float address's LIVE balance.
+      //  - floatReleasedUnits: cumulative post-mint float increases.
       //  - realization: how much of the public float has actually been
       //    purchased, so the app can show a "soft" (listing-price) net worth
       //    separately from market-backed demand.
-      const enriched = await Promise.all(coins.map(async (c) => {
-        let availableUnits: string | null = null;
-        let publicFloatUnits: string | null = null;
-        let publicFloatSoldUnits: string | null = null;
-        let realizationRatio: number | null = null;
-        try {
-          if (c.issuerAddress) {
-            // getChainBalance returns whole-coin base units on this ledger.
-            availableUnits = BigInt(getChainBalance(c.mintAddress, c.issuerAddress)).toString();
-          }
-        } catch { /* chain unknown on this node — leave null */ }
-        try {
-          const total = c.totalShares != null ? BigInt(Math.round(Number(c.totalShares))) : null;
-          const retained = c.retainedShares != null ? BigInt(Math.round(Number(c.retainedShares))) : null;
-          if (total != null && retained != null && total > 0n) {
-            const initialFloat = total - retained;
-            if (initialFloat > 0n) {
-              const floatUnits = BigInt(getChainBalance(c.mintAddress, PUBLIC_FLOAT_ADDRESS));
-              let sold = initialFloat - floatUnits;
-              if (sold < 0n) sold = 0n;
-              if (sold > initialFloat) sold = initialFloat;
-              publicFloatUnits = initialFloat.toString();
-              publicFloatSoldUnits = sold.toString();
-              realizationRatio = Number(sold) / Number(initialFloat);
-            }
-          }
-        } catch { /* leave null */ }
-        return { ...c, availableUnits, publicFloatUnits, publicFloatSoldUnits, realizationRatio };
-      }));
+      const enriched = coins.map((c) => ({ ...c, ...coinFloatPosition(c) }));
       sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, userId, coins: enriched });
     } catch (err) { fail(ctx, err); }
   });

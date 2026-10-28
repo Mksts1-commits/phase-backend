@@ -60,6 +60,7 @@ import { mountBtcRoutes } from "./btc-funding.js";
 import { mountStripeRoutes } from "./stripe-funding.js";
 import { mountIssuanceRoutes } from "./issuance.js";
 import { mountCoinEditRoutes } from "./coin-edit.js";
+import { mountFloatRoutes } from "./float.js";
 import { mountBonusRoutes } from "./bonus.js";
 import { mountAuthRoutes, resolveBearerUserId } from "./auth.js";
 import { mountOAuthRoutes } from "./oauth.js";
@@ -1121,6 +1122,11 @@ mountIssuanceRoutes({ route, sendJson, HttpError });
 // Owner-only PATCH for social links/website/tagline plus per-coin
 // document upload/list/download/delete (Documentation & Compliance).
 mountCoinEditRoutes({ route, sendJson, HttpError });
+
+// --- 8e-v(i-a). Public-float increases (see float.ts) ---
+// Owner-only release of retained shares to the public float. Total
+// supply never changes; only the retained/float split moves.
+mountFloatRoutes({ route, sendJson, HttpError });
 
 // --- 8e-v(j). Signup bonus pool (see bonus.ts) ---
 // Fixed pool, admin-adjustable: new users get 1000 PHASE while it lasts.

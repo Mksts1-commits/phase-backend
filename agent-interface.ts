@@ -45,7 +45,7 @@
 import { getPool } from "./db.js";
 import { resolveBearerAuth } from "./oauth.js";
 import { getPhaseBalance } from "./bonus.js";
-import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
+import { getIssuanceStore, coinFloatPosition, type IssuanceCoin } from "./issuance.js";
 import { getMarketStore, type MarketTrade } from "./marketplace.js";
 import { getOffersStore, type SwapOffer } from "./offers.js";
 import { getChainBalance, PUBLIC_FLOAT_ADDRESS, auditLog } from "./sovereign-ledger-core.js";
@@ -254,39 +254,11 @@ async function coinCard(c: IssuanceCoin): Promise<CoinCard> {
   };
 }
 
-/** Position enrichment for my own coins — mirrors GET /api/v1/issuance/coins. */
-function coinPosition(c: IssuanceCoin): {
-  availableUnits: string | null;
-  publicFloatUnits: string | null;
-  publicFloatSoldUnits: string | null;
-  realizationRatio: number | null;
-} {
-  let availableUnits: string | null = null;
-  let publicFloatUnits: string | null = null;
-  let publicFloatSoldUnits: string | null = null;
-  let realizationRatio: number | null = null;
-  try {
-    if (c.issuerAddress) {
-      availableUnits = BigInt(getChainBalance(c.mintAddress, c.issuerAddress)).toString();
-    }
-  } catch { /* chain unknown on this node */ }
-  try {
-    const total = c.totalShares != null ? BigInt(Math.round(Number(c.totalShares))) : null;
-    const retained = c.retainedShares != null ? BigInt(Math.round(Number(c.retainedShares))) : null;
-    if (total != null && retained != null && total > 0n) {
-      const initialFloat = total - retained;
-      if (initialFloat > 0n) {
-        const floatUnits = BigInt(getChainBalance(c.mintAddress, PUBLIC_FLOAT_ADDRESS));
-        let sold = initialFloat - floatUnits;
-        if (sold < 0n) sold = 0n;
-        if (sold > initialFloat) sold = initialFloat;
-        publicFloatUnits = initialFloat.toString();
-        publicFloatSoldUnits = sold.toString();
-        realizationRatio = Number(sold) / Number(initialFloat);
-      }
-    }
-  } catch { /* leave null */ }
-  return { availableUnits, publicFloatUnits, publicFloatSoldUnits, realizationRatio };
+/** Position enrichment for my own coins — mirrors GET /api/v1/issuance/coins.
+ *  Delegates to issuance.ts's coinFloatPosition so both stay consistent
+ *  (total float = genesis float + cumulative post-mint releases). */
+function coinPosition(c: IssuanceCoin): ReturnType<typeof coinFloatPosition> {
+  return coinFloatPosition(c);
 }
 
 function offerSummary(o: SwapOffer, side: "inbox" | "outbox"): Record<string, unknown> {
