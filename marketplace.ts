@@ -30,6 +30,7 @@ import {
 } from "./sovereign-ledger-core.js";
 import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
 import { computeCoinVolumes, coinTotalFloatShares } from "./volume.js";
+import { computeGhostSeries } from "./ghost.js";
 import {
   computeLegitimacyForCoinsByIssuer,
   publicLegitimacyView,
@@ -1737,11 +1738,13 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
       // Never fails the directory: on DB trouble every coin gets nulls
       // (frontend shows no accent) instead of a false red.
       const volumes = await computeCoinVolumes(floatByCoin);
+      const ghosts = await computeGhostSeries([...floatByCoin.keys()]);
       for (const row of out as Array<Record<string, unknown>>) {
         const v = volumes.get(row.id as string);
         row.volumePctFloat = v?.volumePctFloat ?? null;
         row.volumeTier = v?.volumeTier ?? null;
         row.priceSeries30d = v?.priceSeries30d ?? null;
+        row.ghostSeries30d = ghosts.get(row.id as string) ?? null;
       }
       sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, coins: out });
     } catch (err) { fail(ctx, err); }

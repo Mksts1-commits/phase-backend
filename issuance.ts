@@ -16,6 +16,7 @@ import { auditLog } from "./sovereign-ledger-core.js";
 import { createChain, LedgerError, getChainBalance, PUBLIC_FLOAT_ADDRESS } from "./sovereign-ledger-core.js";
 import { getPool } from "./db.js";
 import { computeCoinVolumes, coinTotalFloatShares } from "./volume.js";
+import { computeGhostSeries } from "./ghost.js";
 import { resolveBearerUserId } from "./auth.js";
 import { resolveBearerAuth } from "./oauth.js";
 import { checkRateLimit } from "./rate-limit.js";
@@ -1215,6 +1216,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         floatByCoin.set(c.id, f);
       }
       const volumes = await computeCoinVolumes(floatByCoin);
+      const ghosts = await computeGhostSeries([...floatByCoin.keys()]);
       const withVolume = enriched.map((c) => {
         const v = volumes.get(c.id);
         return {
@@ -1222,6 +1224,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
           volumePctFloat: v?.volumePctFloat ?? null,
           volumeTier: v?.volumeTier ?? null,
           priceSeries30d: v?.priceSeries30d ?? null,
+          ghostSeries30d: ghosts.get(c.id) ?? null,
         };
       });
       sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, userId, coins: withVolume });
