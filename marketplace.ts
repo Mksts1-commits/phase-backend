@@ -29,6 +29,7 @@ import {
   auditLog,
 } from "./sovereign-ledger-core.js";
 import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
+import { computeCoinVolumes, coinTotalFloatShares } from "./volume.js";
 import {
   computeLegitimacyForCoinsByIssuer,
   publicLegitimacyView,
@@ -1679,13 +1680,16 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         legitimacyByCoin = await computeLegitimacyForCoinsByIssuer(coins);
       } catch { legitimacyByCoin = new Map<string, LegitimacyScore>(); }
       const out = [];
+      const floatByCoin = new Map<string, number | null>();
       for (const c of coins) {
         let category: string | null = null;
         let tagline: string | null = null;
         let valueThesis: string | null = null;
         let socialProfiles: Array<{ platform: string; url: string }> = [];
+        let draftEquityPublic: number | null = null;
         try {
           const draft = c.draftId ? await issuance.getDraft(c.draftId) : null;
+          draftEquityPublic = draft?.equityPublic ?? null;
           const raw = draft?.category?.trim();
           category = raw ? raw : null;
           const rawTag = draft?.tagline?.trim();
@@ -1698,6 +1702,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
               : JSON.parse(draft.socialProfiles as unknown as string);
           }
         } catch { category = null; }
+        floatByCoin.set(c.id, coinTotalFloatShares(c, draftEquityPublic));
         let floatAvailable = "0";
         try {
           floatAvailable = BigInt(getChainBalance(c.mintAddress, PUBLIC_FLOAT_ADDRESS)).toString();
@@ -1726,6 +1731,17 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
             ? publicLegitimacyView(legitimacyByCoin.get(c.id)!)
             : EMPTY_PUBLIC_LEGITIMACY,
         });
+      }
+      // Volume accent (2026-11-03 spec): trailing-30-day traded shares as %
+      // of float + tier + last-30-trades price series, from market_trades.
+      // Never fails the directory: on DB trouble every coin gets nulls
+      // (frontend shows no accent) instead of a false red.
+      const volumes = await computeCoinVolumes(floatByCoin);
+      for (const row of out as Array<Record<string, unknown>>) {
+        const v = volumes.get(row.id as string);
+        row.volumePctFloat = v?.volumePctFloat ?? null;
+        row.volumeTier = v?.volumeTier ?? null;
+        row.priceSeries30d = v?.priceSeries30d ?? null;
       }
       sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, coins: out });
     } catch (err) { fail(ctx, err); }

@@ -15,6 +15,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { auditLog } from "./sovereign-ledger-core.js";
 import { createChain, LedgerError, getChainBalance, PUBLIC_FLOAT_ADDRESS } from "./sovereign-ledger-core.js";
 import { getPool } from "./db.js";
+import { computeCoinVolumes, coinTotalFloatShares } from "./volume.js";
 import { resolveBearerUserId } from "./auth.js";
 import { resolveBearerAuth } from "./oauth.js";
 import { checkRateLimit } from "./rate-limit.js";
@@ -1192,7 +1193,38 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
       //    purchased, so the app can show a "soft" (listing-price) net worth
       //    separately from market-backed demand.
       const enriched = coins.map((c) => ({ ...c, ...coinFloatPosition(c) }));
-      sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, userId, coins: enriched });
+      // Volume accent (2026-11-03 spec): same trailing-30-day % of float +
+      // tier + price series as the marketplace directory, so the dashboard
+      // holdings rows (built from these coins) accent identically. Float
+      // prefers the enriched total-float figure, falling back to the
+      // draft's public-float percent for legacy coins. Never fails the
+      // read: on DB trouble every coin gets nulls (no accent).
+      const floatByCoin = new Map<string, number | null>();
+      for (const c of enriched) {
+        let f: number | null = null;
+        if (c.publicFloatUnits != null) {
+          const n = Number(c.publicFloatUnits);
+          f = Number.isFinite(n) && n > 0 ? n : null;
+        }
+        if (f == null) {
+          try {
+            const draft = c.draftId ? await _st2.getDraft(c.draftId) : null;
+            f = coinTotalFloatShares(c, draft?.equityPublic ?? null);
+          } catch { f = null; }
+        }
+        floatByCoin.set(c.id, f);
+      }
+      const volumes = await computeCoinVolumes(floatByCoin);
+      const withVolume = enriched.map((c) => {
+        const v = volumes.get(c.id);
+        return {
+          ...c,
+          volumePctFloat: v?.volumePctFloat ?? null,
+          volumeTier: v?.volumeTier ?? null,
+          priceSeries30d: v?.priceSeries30d ?? null,
+        };
+      });
+      sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, userId, coins: withVolume });
     } catch (err) { fail(ctx, err); }
   });
 
