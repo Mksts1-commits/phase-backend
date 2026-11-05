@@ -1660,6 +1660,16 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
     } catch (err) { fail(ctx, err); }
   });
 
+  // --- Public directory cache (2026-11-05, free scaling fix) ---
+  // GET /api/v1/marketplace/coins is the hottest public read: every load runs
+  // listAllCoins + per-coin draft reads + Cred scoring + 30d volume + ghost
+  // series. The directory is identical for every caller (no auth, no query
+  // params), so cache the assembled payload for 30s. Rate limiting still
+  // runs per request before the cache is consulted. A mint/trade shows up at
+  // most 30s late — same staleness class as the 60s market-data cache.
+  const COINS_CACHE_TTL_MS = 30_000;
+  let coinsCache: { at: number; payload: unknown } | null = null;
+
   // --- GET /api/v1/marketplace/coins ---
   // The "issuers online" directory: every issued sovereign coin, newest first.
   // Public — no auth. Powers marketplace browsing: each row carries the
@@ -1669,6 +1679,12 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
     try {
       if (!checkRateLimit(`coins:${clientIp(ctx)}`, 120, 60_000)) {
         throw new HttpError(429, "rate_limited", "Too many requests — wait a moment and try again.");
+      }
+      const cacheNow = Date.now();
+      if (coinsCache && cacheNow - coinsCache.at < COINS_CACHE_TTL_MS) {
+        ctx.res.setHeader("X-Phase-Cache", "HIT");
+        sendJson(ctx.res, 200, coinsCache.payload);
+        return;
       }
       const issuance = await getIssuanceStore();
       const coins = await issuance.listAllCoins();
@@ -1746,7 +1762,10 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         row.priceSeries30d = v?.priceSeries30d ?? null;
         row.ghostSeries30d = ghosts.get(row.id as string) ?? null;
       }
-      sendJson(ctx.res, 200, { ...NETWORK_ENVELOPE, coins: out });
+      const coinsPayload = { ...NETWORK_ENVELOPE, coins: out };
+      coinsCache = { at: Date.now(), payload: coinsPayload };
+      ctx.res.setHeader("X-Phase-Cache", "MISS");
+      sendJson(ctx.res, 200, coinsPayload);
     } catch (err) { fail(ctx, err); }
   });
 

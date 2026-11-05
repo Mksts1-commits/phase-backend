@@ -52,6 +52,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import { getUsdPerBtc, getQuote, getFeedStatus } from "./market-data.js";
@@ -1290,6 +1291,41 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     res.end();
     return;
   }
+
+  // --- Response compression (2026-11-05, free scaling fix) ---
+  // Gzip JSON responses when the client accepts it. Installed per request so
+  // handlers keep calling sendJson()/writeHead()/end() unchanged: the wrapper
+  // captures writeHead's args and transforms the body at end() time. Only
+  // application/json bodies over 1 KB are compressed; downloads (PDFs etc.)
+  // pass through untouched. No res.write() streaming exists in this codebase,
+  // so end() is the only body flush point.
+  const acceptsGzip = /\bgzip\b/i.test(req.headers["accept-encoding"] ?? "");
+  const origWriteHead = res.writeHead.bind(res);
+  const origEnd = res.end.bind(res);
+  let pendingHead: { statusCode: number; headers: Record<string, unknown> } | null = null;
+  (res as any).writeHead = (statusCode: number, headers?: Record<string, unknown>): ServerResponse => {
+    pendingHead = { statusCode, headers: headers ?? {} };
+    return res;
+  };
+  (res as any).end = (chunk?: unknown, ...args: unknown[]): ServerResponse => {
+    const statusCode = pendingHead?.statusCode ?? 200;
+    const headers: Record<string, unknown> = { ...(pendingHead?.headers ?? {}) };
+    let body: Buffer | undefined;
+    if (typeof chunk === "string") body = Buffer.from(chunk, "utf8");
+    else if (Buffer.isBuffer(chunk)) body = chunk;
+    else if (chunk instanceof Uint8Array) body = Buffer.from(chunk);
+    const contentType = String(headers["Content-Type"] ?? headers["content-type"] ?? "");
+    if (acceptsGzip && body && body.length > 1024 && contentType.includes("application/json")) {
+      const gzipped = gzipSync(body);
+      headers["Content-Encoding"] = "gzip";
+      headers["Content-Length"] = gzipped.length;
+      headers["Vary"] = "Accept-Encoding";
+      origWriteHead(statusCode, headers as any);
+      return (origEnd as (...a: unknown[]) => ServerResponse)(gzipped, ...args);
+    }
+    if (pendingHead) origWriteHead(statusCode, headers as any);
+    return (origEnd as (...a: unknown[]) => ServerResponse)(chunk, ...args);
+  };
 
   for (const r of routes) {
     if (r.method !== method) continue;
