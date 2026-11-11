@@ -14,8 +14,10 @@
  *   'bank_statement' | 'financial_report' | 'other' — migration 023+;
  *   license / government-ID / bank-statement documents earn
  *   Legitimacy Score points)
- * GET  /api/v1/coins/:id/documents          (public, metadata list)
- * GET  /api/v1/coins/:id/documents/:docId   (public, download)
+ * GET  /api/v1/coins/:id/documents          (owner: all documents;
+ *   anyone else: public filing-class metadata only — Cred 2.0 §3/§4)
+ * GET  /api/v1/coins/:id/documents/:docId   (filing-class: public
+ *   download; verification-class: owner only)
  * DELETE /api/v1/coins/:id/documents/:docId (owner)
  *
  * Documents power the dashboard's Documentation & Compliance section.
@@ -86,6 +88,15 @@ const DOC_TYPES = new Set([
   "certificate_of_authenticity", "appraisal", "provenance_record",
   "government_id", "bank_statement", "financial_report", "other",
 ]);
+// Cred 2.0 (spec §3): document classes. Verification-class documents
+// are PRIVATE proof — the issuer alone can list or download them, and
+// buyers see only the Cred item they earn. Filing-class documents are
+// the public disclosure layer surfaced by the coin page's "More info"
+// view. 'other' is unclassified and treated as private.
+const VERIFICATION_DOC_TYPES = new Set([
+  "government_id", "bank_statement", "financial_report", "other",
+]);
+const PUBLIC_DOC_TYPES = [...DOC_TYPES].filter((x) => !VERIFICATION_DOC_TYPES.has(x));
 const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
 
 function cleanUrl(raw: string, maxLen: number): string | null {
@@ -288,16 +299,29 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
   });
 
   // --- GET /api/v1/coins/:id/documents ---
+  // Cred 2.0 §3/§4: the issuer sees every document; anyone else sees
+  // only public filing-class documents (the "More info" research view).
+  // Verification-class documents never appear in a non-owner list —
+  // not even their filenames.
   route("GET", "/api/v1/coins/:id/documents", async (ctx: Ctx) => {
     try {
-      await getCoin(ctx.params.id); // 404 if unknown; list itself is public
+      const coin = await getCoin(ctx.params.id); // 404 if unknown
+      const viewerId = await resolveBearerUserId(ctx.req.headers).catch(() => null);
+      const isOwner = !!viewerId && viewerId === coin.userId;
       const pool = getPool();
-      const r = await pool.query(
-        `SELECT id, filename, mime_type AS "mimeType", size_bytes AS "sizeBytes",
-                doc_type AS "docType", created_at AS "createdAt"
-         FROM coin_documents WHERE coin_id = $1 ORDER BY created_at ASC`,
-        [ctx.params.id]
-      );
+      const r = isOwner
+        ? await pool.query(
+            `SELECT id, filename, mime_type AS "mimeType", size_bytes AS "sizeBytes",
+                    doc_type AS "docType", created_at AS "createdAt"
+             FROM coin_documents WHERE coin_id = $1 ORDER BY created_at ASC`,
+            [ctx.params.id]
+          )
+        : await pool.query(
+            `SELECT id, filename, mime_type AS "mimeType", size_bytes AS "sizeBytes",
+                    doc_type AS "docType", created_at AS "createdAt"
+             FROM coin_documents WHERE coin_id = $1 AND doc_type = ANY($2) ORDER BY created_at ASC`,
+            [ctx.params.id, PUBLIC_DOC_TYPES]
+          );
       sendJson(ctx.res, 200, { ...ENVELOPE, documents: r.rows });
     } catch (err) { fail(ctx, err); }
   });
@@ -307,12 +331,23 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
     try {
       const pool = getPool();
       const r = await pool.query(
-        `SELECT filename, mime_type AS "mimeType", data FROM coin_documents
+        `SELECT filename, mime_type AS "mimeType", doc_type AS "docType", data FROM coin_documents
          WHERE id = $1 AND coin_id = $2`,
         [ctx.params.docId, ctx.params.id]
       );
       if (r.rows.length === 0) throw new HttpError(404, "document_not_found", "No document with that id.");
       const doc = r.rows[0];
+      // Cred 2.0 §3: verification-class files (government ID, bank
+      // statements, financial reports, unclassified) are owner-only.
+      // A non-owner gets the same 404 as a missing document, so the
+      // file's existence is not leaked.
+      if (VERIFICATION_DOC_TYPES.has(String(doc.docType))) {
+        const coin = await getCoin(ctx.params.id);
+        const viewerId = await resolveBearerUserId(ctx.req.headers).catch(() => null);
+        if (!viewerId || viewerId !== coin.userId) {
+          throw new HttpError(404, "document_not_found", "No document with that id.");
+        }
+      }
       const bytes: Buffer = doc.data;
       ctx.res.writeHead(200, {
         "Content-Type": doc.mimeType,
