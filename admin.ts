@@ -6,11 +6,20 @@
  *     issuance_users.is_admin = TRUE, or whose email is listed in
  *     PHASE_ADMIN_EMAILS (comma-separated, case-insensitive).
  * Ordinary users get 403. Every administrative action is audit-logged.
+ *
+ * Exception — the coin factory routes (POST/GET /api/v1/admin/coins and
+ * DELETE /api/v1/admin/coins/:id) also accept the batch key header
+ * X-Admin-Key (env PHASE_ADMIN_API_KEY). Key-issued coins are owned by
+ * the account named in env PHASE_ADMIN_ISSUER_EMAIL. The key reaches
+ * nothing else: fees, treasury and user administration stay session-only.
  */
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { resolveBearerUserId } from "./auth.js";
 import { checkRateLimit as sharedCheckRateLimit, clientIpFromHeaders } from "./rate-limit.js";
-import { auditLog } from "./sovereign-ledger-core.js";
+import { auditLog, createChain, LedgerError, store as ledgerStore } from "./sovereign-ledger-core.js";
 import { dbQuery, dbQueryOne } from "./db.js";
+import { getIssuanceStore } from "./issuance.js";
+import { ensureLinkVerdicts, normalizeLinkStatus } from "./link-check.js";
 import {
   getFeeConfig,
   setFeeConfig,
@@ -96,6 +105,51 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
     }
   };
 
+  // --- Coin factory gate (create / list / delete below) ---
+  // These routes accept EITHER an admin session (requireAdmin above) OR
+  // the batch key in the X-Admin-Key header (env PHASE_ADMIN_API_KEY,
+  // timing-safe compared). The key reaches ONLY the coin factory routes:
+  // fees, treasury and user administration stay session-only. With the
+  // key there is no signup or login — the coins are issued to the
+  // existing account named by env PHASE_ADMIN_ISSUER_EMAIL, so that
+  // account owns them (dashboard, edits, claims) from the start.
+  const adminKeyMatches = (ctx: AdminCtx): boolean => {
+    const expected = process.env.PHASE_ADMIN_API_KEY;
+    if (!expected) return false;
+    const raw = ctx.req.headers["x-admin-key"];
+    const provided = Array.isArray(raw) ? raw[0] : raw;
+    if (!provided) return false;
+    const a = createHash("sha256").update(provided).digest();
+    const b = createHash("sha256").update(expected).digest();
+    return timingSafeEqual(a, b);
+  };
+
+  const resolveIssuerUserId = async (): Promise<string> => {
+    const email = (process.env.PHASE_ADMIN_ISSUER_EMAIL || "").trim();
+    if (!email) {
+      throw new HttpError(503, "admin_not_configured", "PHASE_ADMIN_ISSUER_EMAIL is not set.");
+    }
+    const row = await dbQueryOne(
+      `SELECT id FROM issuance_users WHERE lower(email) = lower($1)`,
+      [email]
+    );
+    if (!row) {
+      throw new HttpError(503, "admin_issuer_not_found", `No Phase account exists for ${email}.`);
+    }
+    return row.id as string;
+  };
+
+  /** Returns the acting userId and how the caller authenticated. For key
+   *  calls the acting id IS the issuer account (it owns what it makes). */
+  const requireCoinFactoryAdmin = async (
+    ctx: AdminCtx
+  ): Promise<{ userId: string; via: string }> => {
+    if (adminKeyMatches(ctx)) {
+      return { userId: await resolveIssuerUserId(), via: "api_key" };
+    }
+    return { userId: await requireAdmin(ctx), via: "session" };
+  };
+
   // --- GET /api/v1/admin/me — is the current user an admin? ---
   // Lets the app decide whether to show the admin dashboard. Returns 200
   // with { isAdmin: false } for non-admins (never 403) so the client can
@@ -112,6 +166,190 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
   // --- DELETE /api/v1/admin/coins/:id — remove a coin (admin) ---
   // Deletes the coin, its sovereign chain (cascades blocks/balances), draft,
   // signature, and documents. Refuses coins with trading activity. Admin-only.
+
+  // --- POST /api/v1/admin/coins — coin factory: create + mint in one call ---
+  // Mints an UNSIGNED coin (the issuance meme path: no agreement signature)
+  // for directory / placeholder listings — e.g. pre-opening a coin for each
+  // business in an outreach directory. The real coin is the one the business
+  // later signs and mints itself; these stay visibly unsigned (is_meme,
+  // no_agreement) until claimed. Same validation, chain provisioning and
+  // storage as POST /api/v1/issuance/draft + /mint, fused into one call.
+  // Auth: admin session, or X-Admin-Key (see the coin factory gate above).
+  // Session admins may name another owner via issuerEmail; key calls always
+  // issue to the PHASE_ADMIN_ISSUER_EMAIL account.
+  route("POST", "/api/v1/admin/coins", async (ctx: AdminCtx) => {
+    try {
+      rateLimitAdmin(ctx);
+      const { userId: actingId, via } = await requireCoinFactoryAdmin(ctx);
+      const body = asRecord(ctx.body);
+
+      let ownerId = actingId;
+      if (via === "session" && typeof body.issuerEmail === "string" && body.issuerEmail.trim()) {
+        const row = await dbQueryOne(
+          `SELECT id FROM issuance_users WHERE lower(email) = lower($1)`,
+          [body.issuerEmail.trim()]
+        );
+        if (!row) {
+          throw new HttpError(422, "issuer_not_found", `No Phase account exists for ${body.issuerEmail}.`);
+        }
+        ownerId = row.id as string;
+      }
+
+      // Validation mirrors the issuance draft + mint rules.
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (name.length < 1 || name.length > 60) {
+        throw new HttpError(422, "invalid_name", "name must be 1-60 characters");
+      }
+      const ticker = typeof body.ticker === "string" ? body.ticker.trim().toUpperCase() : "";
+      if (!/^[A-Z0-9]{2,10}$/.test(ticker)) {
+        throw new HttpError(422, "invalid_ticker", "ticker must be 2-10 characters, A-Z and 0-9 only");
+      }
+      const equityPublic = body.equityPublic === undefined ? 5 : Number(body.equityPublic);
+      const equityRetained = body.equityRetained === undefined ? 95 : Number(body.equityRetained);
+      if (![equityPublic, equityRetained].every((n) => Number.isInteger(n) && n >= 0 && n <= 100)
+          || equityPublic + equityRetained !== 100) {
+        throw new HttpError(422, "invalid_split",
+          "equityPublic and equityRetained must be whole numbers 0-100 that sum to 100");
+      }
+      const priceUsd = body.priceUsd === undefined ? 0.5 : Number(body.priceUsd);
+      if (!Number.isFinite(priceUsd) || priceUsd <= 0 || priceUsd > 1_000_000_000) {
+        throw new HttpError(422, "invalid_price", "priceUsd must be a positive number.");
+      }
+      const totalShares = Number(body.totalShares);
+      if (!Number.isInteger(totalShares) || totalShares < 1000) {
+        throw new HttpError(422, "invalid_total_shares", "totalShares must be a whole number >= 1000.");
+      }
+      // Same ceiling as issuance.ts MAX_ISSUANCE_MARKET_CAP_USD.
+      if (priceUsd * totalShares > 500_000_000) {
+        throw new HttpError(422, "market_cap_exceeded",
+          "Market cap at issuance exceeds the $500M limit. Lower the price or the supply.");
+      }
+      const issuerAddress = typeof body.issuerAddress === "string" ? body.issuerAddress.trim() : "";
+      if (!issuerAddress) {
+        throw new HttpError(400, "missing_issuer_address",
+          "Body must include issuerAddress: the Phase sovereign wallet address (ph1...) that holds the retained stake.");
+      }
+      const category = typeof body.category === "string" ? body.category.trim() : "";
+      const tagline = typeof body.tagline === "string" ? body.tagline.trim().slice(0, 280) : "";
+      const valueThesis = typeof body.valueThesis === "string" ? body.valueThesis.trim().slice(0, 2000) : "";
+      const websiteUrl = typeof body.websiteUrl === "string" ? body.websiteUrl.trim().slice(0, 500) || null : null;
+      const socialProfiles = Array.isArray(body.socialProfiles)
+        ? (body.socialProfiles as Array<{ platform?: string; url?: string }>)
+            .filter((s) => s && typeof s.url === "string" && s.url.trim())
+            .map((s) => ({ platform: typeof s.platform === "string" ? s.platform.trim() : "", url: s.url.trim() }))
+        : [];
+
+      const idemRaw = ctx.req.headers["idempotency-key"] ?? ctx.req.headers["x-idempotency-key"];
+      const idemHeader = Array.isArray(idemRaw) ? idemRaw[0] : idemRaw;
+      const idemKey = (typeof idemHeader === "string" && idemHeader.trim())
+        || (typeof body.idempotencyKey === "string" && body.idempotencyKey.trim())
+        || `admin-${randomUUID()}`;
+
+      const s = await getIssuanceStore();
+
+      // Idempotent replay: same key -> original coin, no second mint.
+      const replay = await s.getCoinByIdempotency(idemKey);
+      if (replay) {
+        sendJson(ctx.res, 200, {
+          idempotentReplay: true, coin: replay,
+          chainId: replay.mintAddress, genesisHash: replay.txSignature,
+        });
+        return;
+      }
+
+      const dupe = await dbQueryOne(`SELECT id FROM issuance_coins WHERE ticker = $1`, [ticker]);
+      if (dupe) {
+        throw new HttpError(409, "ticker_taken", `Ticker ${ticker} is already in use.`);
+      }
+
+      await s.ensureUser(ownerId);
+      const linkStatus = await ensureLinkVerdicts(
+        [websiteUrl, null, ...socialProfiles.map((p) => p.url)],
+        null
+      );
+      const draft = await s.createDraft({
+        userId: ownerId,
+        name,
+        ticker,
+        category,
+        tagline,
+        valueThesis,
+        equityPublic,
+        equityRetained,
+        socialProfiles,
+        websiteUrl,
+        logoUrl: null,
+        linkStatus,
+        priceUsd,
+        totalShares,
+        idempotencyKey: `admin-draft:${idemKey}`,
+      });
+
+      let chain: { chain_id: string; genesis_hash: string };
+      try {
+        chain = await createChain({
+          coin_name: name,
+          ticker,
+          total_supply: String(totalShares),
+          decimals: 6,
+          equity_public_pct: equityPublic,
+          issuer_address: issuerAddress,
+          is_meme: true,
+          issuance_draft_id: draft.id,
+          issuance_signature_id: null,
+          covenant_hash: undefined,
+        });
+      } catch (e) {
+        if (e instanceof LedgerError) throw new HttpError(e.status ?? 422, e.code ?? "chain_error", e.message);
+        throw e;
+      }
+
+      const coinLinkStatus = await ensureLinkVerdicts(
+        [websiteUrl, null, ...socialProfiles.map((p) => p.url)],
+        normalizeLinkStatus(draft.linkStatus)
+      );
+      const coin = await s.storeCoin({
+        draftId: draft.id,
+        userId: ownerId,
+        signatureId: null,
+        isMeme: true,
+        name,
+        ticker,
+        mintAddress: chain.chain_id,
+        txSignature: chain.genesis_hash,
+        supply: String(totalShares),
+        decimals: 6,
+        priceUsd,
+        issuerAddress,
+        category: category || null,
+        totalShares,
+        retainedShares: Math.round((totalShares * equityRetained) / 100),
+        floatReleasedShares: 0,
+        websiteUrl,
+        logoUrl: null,
+        linkStatus: coinLinkStatus,
+        idempotencyKey: idemKey,
+      });
+      await s.setDraftStatus(draft.id, "minted");
+      await auditLog(actingId, "admin_coin_created", "issuance_coin", coin.id,
+        { ticker, chainId: chain.chain_id, ownerId, via, unsigned: true });
+
+      sendJson(ctx.res, 201, {
+        idempotentReplay: false, coin, chainId: chain.chain_id, genesisHash: chain.genesis_hash,
+      });
+    } catch (err) { fail(ctx, err); }
+  });
+
+  // --- GET /api/v1/admin/coins — the factory account's coins ---
+  route("GET", "/api/v1/admin/coins", async (ctx: AdminCtx) => {
+    try {
+      rateLimitAdmin(ctx);
+      const { userId } = await requireCoinFactoryAdmin(ctx);
+      const s = await getIssuanceStore();
+      const coins = await s.listCoinsByUser(userId);
+      sendJson(ctx.res, 200, { coins });
+    } catch (err) { fail(ctx, err); }
+  });
 
   // --- PATCH /api/v1/admin/coins/:id — admin override for coin metadata ---
   // Updates tagline, websiteUrl, socialProfiles. For support interventions.
@@ -162,7 +400,8 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
   route("DELETE", "/api/v1/admin/coins/:id", async (ctx: AdminCtx) => {
     try {
       rateLimitAdmin(ctx);
-      const adminId = await requireAdmin(ctx);
+      // Coin factory gate: an admin session OR the batch key may delete.
+      const { userId: adminId, via } = await requireCoinFactoryAdmin(ctx);
       const coinId = ctx.params.id;
       const coin = await dbQueryOne(
         `SELECT id, draft_id AS "draftId", mint_address AS "mintAddress", ticker FROM issuance_coins WHERE id = $1`,
@@ -177,13 +416,31 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
       if (trades && trades.n > 0) {
         throw new HttpError(409, "coin_has_activity", "Coin has trading activity; refusing to delete.");
       }
+      // Child ledger rows first (in case any lack ON DELETE cascades),
+      // then the chain itself, then the issuance records.
+      await dbQuery(`DELETE FROM sovereign_txs WHERE chain_id = $1`, [coin.mintAddress]);
+      await dbQuery(`DELETE FROM sovereign_balances WHERE chain_id = $1`, [coin.mintAddress]);
+      await dbQuery(`DELETE FROM sovereign_blocks WHERE chain_id = $1`, [coin.mintAddress]);
+      await dbQuery(`DELETE FROM sovereign_mempool WHERE chain_id = $1`, [coin.mintAddress]);
       await dbQuery(`DELETE FROM sovereign_chains WHERE chain_id = $1`, [coin.mintAddress]);
       await dbQuery(`DELETE FROM coin_documents WHERE coin_id = $1`, [coinId]);
+      await dbQuery(`DELETE FROM float_increase_requests WHERE coin_id = $1`, [coinId]);
       await dbQuery(`DELETE FROM issuance_signatures WHERE draft_id = $1`, [coin.draftId]);
       await dbQuery(`DELETE FROM issuance_coins WHERE id = $1`, [coinId]);
       await dbQuery(`DELETE FROM issuance_drafts WHERE id = $1`, [coin.draftId]);
+      // Drop the in-memory ledger copy too — otherwise the chain, and its
+      // ticker reservation, linger until the next restart and the ticker
+      // cannot be re-issued.
+      ledgerStore.chains.delete(coin.mintAddress);
+      ledgerStore.tickerIndex.delete(coin.ticker);
+      ledgerStore.blocksByChain.delete(coin.mintAddress);
+      ledgerStore.balances.delete(coin.mintAddress);
+      ledgerStore.mempoolByChain.delete(coin.mintAddress);
+      for (const [txId, tx] of ledgerStore.txById) {
+        if (tx.chainId === coin.mintAddress) ledgerStore.txById.delete(txId);
+      }
       await auditLog(adminId, "admin_coin_deleted", "issuance_coin", coinId, {
-        ticker: coin.ticker, chainId: coin.mintAddress,
+        ticker: coin.ticker, chainId: coin.mintAddress, via,
       });
       sendJson(ctx.res, 200, { deleted: true, id: coinId, ticker: coin.ticker });
     } catch (err) { fail(ctx, err); }
