@@ -17,10 +17,15 @@ cities.
 
 Env:
   BIZ_LOOKUP_DB   path to biz_lookup.db (default ./biz_lookup.db)
+  BIZ_LOOKUP_DB_URLS  comma-separated part URLs; when the store file is
+                  absent it is downloaded (parts concatenate into one
+                  gzip stream) and decompressed at boot — the free-tier
+                  bootstrap, since free disks are ephemeral
   PORT            listen port (default 8090)
 
 Business data © Overture Maps Foundation, CDLA Permissive 2.0.
 """
+import gzip
 import json
 import os
 import re
@@ -29,10 +34,17 @@ import threading
 import time
 import unicodedata
 import urllib.parse
+import urllib.request
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DB_PATH = os.environ.get("BIZ_LOOKUP_DB", "./biz_lookup.db")
+# Free-tier bootstrap: when the store file is absent, it is downloaded at
+# boot from BIZ_LOOKUP_DB_URLS — a comma-separated, ordered list of URLs
+# whose bytes concatenate into ONE gzip stream of the .db file (the file
+# split into parts). Any plain direct-download host works (object
+# storage, a public Drive/GitHub/HF link, another server).
+DB_URLS = [u.strip() for u in os.environ.get("BIZ_LOOKUP_DB_URLS", "").split(",") if u.strip()]
 PORT = int(os.environ.get("PORT", "8090"))
 SNAPSHOT_BASE = "https://mksts1-commits.github.io/phase-android/app/snapshot.html"
 ATTRIBUTION = "Business data © Overture Maps Foundation (CDLA Permissive 2.0)"
@@ -42,6 +54,8 @@ CACHE_MAX = 512
 _db_lock = threading.Lock()
 _db = None
 
+STATE = {"ready": False, "error": None, "progress": "starting"}
+
 
 def get_db():
     global _db
@@ -49,7 +63,87 @@ def get_db():
         _db = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True,
                               check_same_thread=False)
         _db.row_factory = sqlite3.Row
+        # Keep the footprint small enough for free-tier instances.
+        _db.execute("PRAGMA cache_size = -4000")
+        _db.execute("PRAGMA mmap_size = 0")
+        _db.execute("PRAGMA temp_store = MEMORY")
     return _db
+
+
+def _download_store():
+    """Fetch the store parts, gunzip them into place, mark ready."""
+    tmp = DB_PATH + ".tmp"
+    try:
+        STATE["progress"] = "downloading store"
+        with open(tmp, "wb") as out:
+            gz = gzip.GzipFile(fileobj=_PartReader(DB_URLS), mode="rb")
+            while True:
+                chunk = gz.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+        os.replace(tmp, DB_PATH)
+        get_db().execute("SELECT COUNT(*) FROM places").fetchone()
+        STATE["ready"] = True
+        STATE["progress"] = "ready"
+        print("store bootstrap complete", flush=True)
+    except Exception as e:
+        STATE["error"] = str(e)
+        STATE["progress"] = "failed"
+        print(f"store bootstrap failed: {e}", flush=True)
+
+
+class _PartReader:
+    """File-like that streams the concatenation of the part URLs."""
+
+    def __init__(self, urls):
+        self.urls = urls
+        self.idx = 0
+        self.resp = None
+        self.buf = b""
+
+    def _open_next(self):
+        if self.idx >= len(self.urls):
+            self.resp = None
+            return False
+        url = self.urls[self.idx]
+        self.idx += 1
+        last_err = None
+        for _ in range(3):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "phase-lookup/1.0"})
+                self.resp = urllib.request.urlopen(req, timeout=120)
+                return True
+            except Exception as e:  # retry transient fetch failures
+                last_err = e
+                time.sleep(2)
+        raise RuntimeError(f"download failed for part {self.idx}: {last_err}")
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = 1 << 20
+        while len(self.buf) < n:
+            if self.resp is None and not self._open_next():
+                break
+            chunk = self.resp.read(n - len(self.buf))
+            if chunk:
+                self.buf += chunk
+            else:
+                self.resp = None
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+
+def ensure_store():
+    if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0:
+        STATE["ready"] = True
+        STATE["progress"] = "ready"
+        return
+    if not DB_URLS:
+        STATE["error"] = "store file missing and BIZ_LOOKUP_DB_URLS not set"
+        STATE["progress"] = "no_store"
+        return
+    threading.Thread(target=_download_store, daemon=True).start()
 
 
 def norm(s):
@@ -258,6 +352,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
         if parsed.path == "/healthz":
+            if not STATE["ready"]:
+                self._json(200, {"ok": False, "state": STATE["progress"],
+                                 "error": STATE["error"],
+                                 "attribution": ATTRIBUTION})
+                return
             try:
                 with _db_lock:
                     n = get_db().execute("SELECT COUNT(*) FROM places").fetchone()[0]
@@ -268,6 +367,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path != "/lookup":
             self._json(404, {"error": "not_found"})
+            return
+        if not STATE["ready"]:
+            self._json(503, {"error": "warming_up",
+                             "message": "Lookup store is still loading; try again shortly.",
+                             "state": STATE["progress"]})
             return
         ip = (self.headers.get("x-forwarded-for") or
               self.client_address[0]).split(",")[0].strip()
@@ -295,6 +399,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    get_db()
-    print(f"business-lookup listening on :{PORT} (db={DB_PATH})")
+    ensure_store()
+    print(f"business-lookup listening on :{PORT} (db={DB_PATH})", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
