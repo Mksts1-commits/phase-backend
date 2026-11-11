@@ -63,6 +63,55 @@ Agreement, the email opens the account, and the link and the one-liner
 become the coin's public listing. If your user asks why you need them,
 that's the one-line answer.
 
+## Be interactive by default — on every surface
+
+The widgets in the next section are the richest version of this, but
+the rule applies everywhere, MCP or not. Most users reach you in a
+chat that supports buttons, chips, cards, or quick replies — use them
+for every decision in this flow. A user should be able to finish a
+mint by tapping, not typing.
+
+- **One decision per prompt, as tappable choices.** Never ask an open
+  question when the answers are enumerable. Keep it to four options
+  plus free text, put the recommended option first, and mark it as
+  the default — a tap on it is a complete answer.
+- **Intake.** After the opening form, resolve anything missing with
+  chips, not questions: issuer path (**Capital / Business / Asset**),
+  ticker (**Suggest one for me** — then offer 2–3 generated tickers
+  as taps), reference link (**Skip for now** — never block on it).
+- **Economics.** Lead with one tap: **Standard deal — $0.50, $100K
+  cap, 95% retained** vs **Customize**. Customizing is presets, not
+  typing: price ($0.10 / $0.25 / $0.50 / $1.00), retained split
+  (95% / 90% / 80% / 50%), each tap updating the math before the
+  draft is created.
+- **Consent stays a deliberate tap.** Signing the agreement and
+  minting get their own explicit, labelled tap (**Sign & mint**)
+  after the recap — never pre-selected, never bundled into another
+  choice. Interactive never means casual about consent.
+- **Cred is a checklist, not a lecture.** When you show a coin's
+  Phase Cred, present the next unearned items as a tappable list —
+  **Upload business licence**, **Add a logo**, **Link a reference
+  URL** — one tap starts that step, and the list visibly fills in as
+  items are earned.
+- **Marketplace is cards.** Present coins as cards with **Watch**,
+  **More info** (the issuer's public filings), and **Get a quote**
+  taps. A quote result carries one action: **Open in the app to
+  buy** — trading itself stays manual, in the app, under the user's
+  own login.
+- **Swap offers are cards too.** An incoming offer is a card showing
+  the exact barter (their coin and ratio against yours) with
+  **Accept**, **Counter**, and **Decline**. The user's tap is their
+  decision; you then carry it out via the offers API. Never accept,
+  counter, or decline on your own initiative.
+- **Always end with the next taps.** After any milestone — minted,
+  Cred item earned, offer answered — close with 2–3 next actions as
+  choices (**View dashboard**, **Boost my Cred**, **Browse the
+  marketplace**, **Share my coin**). The user should never have to
+  wonder what to type next.
+- **Fallback.** Only when the surface genuinely has no interactive
+  elements, use the short text forms in this doc — same defaults,
+  same order, same consent bar.
+
 ## Interactive widgets — use them when Phase MCP is connected
 
 If your host has Phase connected as an MCP server, you have four
