@@ -1703,6 +1703,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
         let tagline: string | null = null;
         let valueThesis: string | null = null;
         let socialProfiles: Array<{ platform: string; url: string }> = [];
+        let googleRating: { rating: number; reviews: number } | null = null;
         let draftEquityPublic: number | null = null;
         try {
           const draft = c.draftId ? await issuance.getDraft(c.draftId) : null;
@@ -1717,6 +1718,15 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
             socialProfiles = Array.isArray(draft.socialProfiles)
               ? draft.socialProfiles
               : JSON.parse(draft.socialProfiles as unknown as string);
+          }
+          const grRaw = (draft as { googleRating?: unknown } | null)?.googleRating;
+          const grObj = typeof grRaw === "string" ? JSON.parse(grRaw) : grRaw;
+          if (grObj && typeof grObj === "object" && Number((grObj as { rating?: unknown }).rating) > 0) {
+            const g = grObj as { rating: unknown; reviews?: unknown };
+            googleRating = {
+              rating: Number(g.rating),
+              reviews: Math.max(0, Math.floor(Number(g.reviews) || 0)),
+            };
           }
         } catch { category = null; }
         floatByCoin.set(c.id, coinTotalFloatShares(c, draftEquityPublic));
@@ -1739,6 +1749,7 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
           issuerUserId: c.userId,
           issuerAddress: c.issuerAddress ?? null,
           socialProfiles,
+          googleRating,
           websiteUrl: c.websiteUrl ?? null,
           logoUrl: c.logoUrl ?? null,
           createdAt: c.createdAt,
