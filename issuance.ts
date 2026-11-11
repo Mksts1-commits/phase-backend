@@ -541,7 +541,7 @@ const COIN_COLS = `id, draft_id AS "draftId", user_id AS "userId",
   supply, decimals, price_usd AS "priceUsd", issuer_address AS "issuerAddress",
   category, total_shares AS "totalShares", retained_shares AS "retainedShares",
   float_released_shares AS "floatReleasedShares",
-  website_url AS "websiteUrl", logo_url AS "logoUrl", google_rating AS "googleRating", link_status AS "linkStatus",
+  website_url AS "websiteUrl", logo_url AS "logoUrl", link_status AS "linkStatus",
   network, idempotency_key AS "idempotencyKey",
   created_at AS "createdAt"`;
 
