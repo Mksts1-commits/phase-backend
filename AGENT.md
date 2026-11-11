@@ -346,8 +346,12 @@ for them — investigate first. The marketplace gives you everything public:
    category. A $5B market cap with zero sales history is a listing price,
    not a market price — say so.
 2. **Read the issuer's materials.** `GET /api/v1/coins/:id/documents` lists
-   the coin's published documents (whitepapers, audits, filings) — public,
-   no auth. Read them before you opine.
+   the coin's public filings (business licences, deeds, whitepapers,
+   audits) — public, no auth. Read them before you opine. Only filings
+   are public: verification documents (government ID, bank statements,
+   financial reports) are never returned to anyone but the coin's owner
+   — they do not appear in this list at all. In the app, buyers reach
+   the same filings from the coin's **More info** view.
 3. **Check their presence.** Follow the social links and website from the
    coin listing. A coin with no verifiable issuer presence is a red flag —
    tell your user.
@@ -464,6 +468,20 @@ How to use it:
   - **Coin logo (4)**: set `logoUrl` — on the issuance draft before
     minting, or later via the coin-profile PATCH — to an image URL
     your user provides.
+- **Documents come in two classes — relay this part plainly.**
+  *Verification* documents — government ID (`government_id`), bank
+  statements and financial reports (`bank_statement` /
+  `financial_report`), and anything uploaded as `other` — are private:
+  the platform shows only the Cred points they earn, the files are
+  downloadable solely by the coin's owner, and they never appear in
+  any public list. *Filings* — business licences and registration,
+  deeds, mortgages, property tax records, leases, and for
+  collectables, certificates of authenticity, appraisals and
+  provenance records — are public: buyers can read and download them
+  from the coin's **More info** view in the app and via
+  `GET /api/v1/coins/:id/documents`. Never tell an issuer that their
+  ID or bank statement will be public, and never tell a buyer they
+  can see an issuer's verification documents.
 - **Links are verified live.** The reference URL, social profile,
   and logo points are earned only by links that actually work: the
   platform checks each URL once (when it's set, or on first scoring
