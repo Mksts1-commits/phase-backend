@@ -51,6 +51,10 @@ export interface IssuanceDraftInput {
    *  mint; also settable afterwards via PATCH /api/v1/coins/:id. Earns
    *  the Legitimacy Score's logo points once set on the coin. */
   logoUrl?: string;
+  /** Google rating snapshot for the business behind the coin
+   *  (migration 029): { rating: 4.8, reviews: 1875 }. Display-only
+   *  trust info rendered on the coin page; never scored. */
+  googleRating?: { rating: number; reviews: number } | null;
   priceUsd?: number; // issuer's starting price per whole coin, USD
   /** Total shares to mint. Fixed on the draft BEFORE the agreement is
    *  signed, so the agreement prints the real supply and mint must match
@@ -60,7 +64,7 @@ export interface IssuanceDraftInput {
   totalShares?: number | null;
 }
 
-export interface IssuanceDraft extends Required<Omit<IssuanceDraftInput, "category" | "tagline" | "valueThesis" | "equityPublic" | "equityRetained" | "socialProfiles" | "websiteUrl" | "logoUrl" | "priceUsd" | "totalShares">> {
+export interface IssuanceDraft extends Required<Omit<IssuanceDraftInput, "category" | "tagline" | "valueThesis" | "equityPublic" | "equityRetained" | "socialProfiles" | "websiteUrl" | "logoUrl" | "googleRating" | "priceUsd" | "totalShares">> {
   id: string;
   category: string;
   tagline: string;
@@ -72,6 +76,8 @@ export interface IssuanceDraft extends Required<Omit<IssuanceDraftInput, "catego
   /** Logo image URL chosen at draft time; copied onto the coin at mint.
    *  Null when the issuer hasn't set one (or on drafts that predate it). */
   logoUrl: string | null;
+  /** Google rating snapshot (migration 029); null when not provided. */
+  googleRating: { rating: number; reviews: number } | null;
   /** Link-liveness verdicts for this draft's URLs (website, logo,
    *  social profiles), keyed by URL — see link-check.ts. Written once
    *  at draft creation; carried onto the coin at mint. */
@@ -138,6 +144,8 @@ export interface IssuanceCoin {
   /** Coin logo image URL (migration 024): copied from the draft at mint,
    *  editable afterwards via PATCH /api/v1/coins/:id. Null if unset. */
   logoUrl: string | null;
+  /** Google rating snapshot (migration 029); null when not provided. */
+  googleRating: { rating: number; reviews: number } | null;
   /** Link-liveness verdicts for the coin's URLs (website, logo, social
    *  profiles), keyed by URL — see link-check.ts / migration 025. A
    *  stored verdict is never re-checked on read. */
@@ -262,6 +270,20 @@ export interface FloatIncreaseRequest {
   createdAt: string;
 }
 
+
+/** Validate a Google rating snapshot: rating in (0, 5] (kept to one
+ *  decimal, as Google displays it), reviews a non-negative integer.
+ *  Anything else becomes null (no rating shown). */
+export function cleanGoogleRating(v: unknown): { rating: number; reviews: number } | null {
+  if (!v || typeof v !== "object") return null;
+  const r = v as { rating?: unknown; reviews?: unknown };
+  const rating = Number(r.rating);
+  const reviews = Math.floor(Number(r.reviews));
+  if (!Number.isFinite(rating) || rating <= 0 || rating > 5) return null;
+  if (!Number.isFinite(reviews) || reviews < 0) return null;
+  return { rating: Math.round(rating * 10) / 10, reviews };
+}
+
 export interface IssuanceStore {
   ensureUser(userId: string, email?: string): Promise<void>;
   createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceDraft>;
@@ -308,20 +330,21 @@ class PgIssuanceStore implements IssuanceStore {
     const rows = await this.q<IssuanceDraft>(
       `INSERT INTO issuance_drafts
          (id, user_id, name, ticker, category, tagline, value_thesis, equity_public,
-          equity_retained, social_profiles, website_url, logo_url, link_status, price_usd, total_shares, status, idempotency_key)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,'draft',$16)
+          equity_retained, social_profiles, website_url, logo_url, google_rating, link_status, price_usd, total_shares, status, idempotency_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15,$16,'draft',$17)
        RETURNING id, user_id AS "userId", name, ticker, category, tagline,
                  value_thesis AS "valueThesis", equity_public AS "equityPublic",
                  equity_retained AS "equityRetained",
                  social_profiles AS "socialProfiles", website_url AS "websiteUrl",
-                 logo_url AS "logoUrl", link_status AS "linkStatus",
+                 logo_url AS "logoUrl", google_rating AS "googleRating", link_status AS "linkStatus",
                  price_usd AS "priceUsd", total_shares::float8 AS "totalShares",
                  status,
                  created_at AS "createdAt", updated_at AS "updatedAt",
                  idempotency_key AS "idempotencyKey"`,
       [id, d.userId, d.name, d.ticker, d.category, d.tagline, d.valueThesis,
        d.equityPublic, d.equityRetained, JSON.stringify(d.socialProfiles),
-       d.websiteUrl ?? null, d.logoUrl ?? null, JSON.stringify(d.linkStatus ?? {}),
+       d.websiteUrl ?? null, d.logoUrl ?? null, d.googleRating ? JSON.stringify(d.googleRating) : null,
+       JSON.stringify(d.linkStatus ?? {}),
        d.priceUsd, d.totalShares ?? null, d.idempotencyKey ?? null]
     );
     return rows[0]!;
@@ -333,7 +356,7 @@ class PgIssuanceStore implements IssuanceStore {
               value_thesis AS "valueThesis", equity_public AS "equityPublic",
               equity_retained AS "equityRetained",
               social_profiles AS "socialProfiles", website_url AS "websiteUrl",
-              logo_url AS "logoUrl", link_status AS "linkStatus",
+              logo_url AS "logoUrl", google_rating AS "googleRating", link_status AS "linkStatus",
               price_usd AS "priceUsd", total_shares::float8 AS "totalShares",
               status,
               created_at AS "createdAt", updated_at AS "updatedAt",
@@ -350,7 +373,7 @@ class PgIssuanceStore implements IssuanceStore {
               value_thesis AS "valueThesis", equity_public AS "equityPublic",
               equity_retained AS "equityRetained",
               social_profiles AS "socialProfiles", website_url AS "websiteUrl",
-              logo_url AS "logoUrl", link_status AS "linkStatus",
+              logo_url AS "logoUrl", google_rating AS "googleRating", link_status AS "linkStatus",
               price_usd AS "priceUsd", total_shares::float8 AS "totalShares",
               status,
               created_at AS "createdAt", updated_at AS "updatedAt",
@@ -518,7 +541,7 @@ const COIN_COLS = `id, draft_id AS "draftId", user_id AS "userId",
   supply, decimals, price_usd AS "priceUsd", issuer_address AS "issuerAddress",
   category, total_shares AS "totalShares", retained_shares AS "retainedShares",
   float_released_shares AS "floatReleasedShares",
-  website_url AS "websiteUrl", logo_url AS "logoUrl", link_status AS "linkStatus",
+  website_url AS "websiteUrl", logo_url AS "logoUrl", google_rating AS "googleRating", link_status AS "linkStatus",
   network, idempotency_key AS "idempotencyKey",
   created_at AS "createdAt"`;
 
@@ -537,7 +560,7 @@ class MemoryIssuanceStore implements IssuanceStore {
   }
   async createDraft(d: Omit<IssuanceDraft, "id" | "status" | "createdAt" | "updatedAt" | "linkStatus"> & { linkStatus?: LinkStatusMap }): Promise<IssuanceDraft> {
     const now = new Date().toISOString();
-    const draft: IssuanceDraft = { ...d, linkStatus: d.linkStatus ?? {}, id: randomUUID(), status: "draft", createdAt: now, updatedAt: now };
+    const draft: IssuanceDraft = { ...d, googleRating: d.googleRating ?? null, linkStatus: d.linkStatus ?? {}, id: randomUUID(), status: "draft", createdAt: now, updatedAt: now };
     this.drafts.set(draft.id, draft);
     if (draft.idempotencyKey) this.draftsByKey.set(draft.idempotencyKey, draft);
     return draft;
@@ -918,6 +941,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         totalShares = deriveDraftTotalShares(priceUsd);
       }
 
+      const googleRating = cleanGoogleRating((body as Record<string, unknown>).googleRating);
       const websiteUrl = str(body.websiteUrl ?? body.website_url).trim().slice(0, 500) || null;
       const logoUrl = str(body.logoUrl ?? body.logo_url).trim().slice(0, 500) || null;
       // Link-liveness verdicts are computed ONCE, here at write time,
@@ -941,6 +965,7 @@ export function mountIssuanceRoutes(deps: IssuanceMountDeps): void {
         socialProfiles,
         websiteUrl,
         logoUrl,
+        googleRating,
         linkStatus,
         priceUsd,
         totalShares,

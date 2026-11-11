@@ -169,7 +169,7 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
       const touchedUrls: string[] = [];
 
       // Draft-owned fields: social profiles + tagline.
-      if (coin.draftId && ("socialProfiles" in body || "tagline" in body)) {
+      if (coin.draftId && ("socialProfiles" in body || "tagline" in body || "googleRating" in body)) {
         const sets: string[] = [];
         const params: unknown[] = [];
         if ("socialProfiles" in body) {
@@ -199,6 +199,23 @@ export function mountCoinEditRoutes(deps: CoinEditMountDeps): void {
           params.push(tagline);
           sets.push(`tagline = $${params.length}`);
           out.tagline = tagline;
+        }
+        if ("googleRating" in body) {
+          // Google rating snapshot (migration 029): { rating, reviews }
+          // or null to clear. Display-only; never scored.
+          let gr: { rating: number; reviews: number } | null = null;
+          if (body.googleRating != null) {
+            const rawGr = asRecord(body.googleRating);
+            const rating = Number(rawGr.rating);
+            const reviews = Math.floor(Number(rawGr.reviews));
+            if (!Number.isFinite(rating) || rating <= 0 || rating > 5 || !Number.isFinite(reviews) || reviews < 0) {
+              throw new HttpError(422, "invalid_google_rating", "googleRating needs rating in (0, 5] and reviews >= 0.");
+            }
+            gr = { rating: Math.round(rating * 10) / 10, reviews };
+          }
+          params.push(gr ? JSON.stringify(gr) : null);
+          sets.push(`google_rating = $${params.length}`);
+          out.googleRating = gr;
         }
         if (sets.length > 0) {
           params.push(coin.draftId);
