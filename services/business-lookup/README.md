@@ -42,8 +42,18 @@ the mint draft.
 
 ## Deploy (production)
 
-The store file (~6.8 GB) needs a persistent home — it is not in git and
-not in the Docker image.
+The store file needs a home — it is not in git and not in the Docker
+image. Two shapes:
+
+- **Free tier (no persistent disk):** split the gzipped store into
+  parts, host them anywhere with direct-download URLs, and set
+  `BIZ_LOOKUP_DB_URLS` to the ordered, comma-separated part URLs. On
+  boot the service downloads and decompresses the store onto the
+  ephemeral disk, answering `503 warming_up` until it is ready
+  (`/healthz` reports the state). Every cold start or redeploy repeats
+  the download, so the first lookup after a wake is slow. See
+  `render.free.yaml.example`.
+- **Paid (persistent disk):**
 
 - **Render:** create a separate Web Service from this repo
   (root dir `services/business-lookup`, Docker or native Python), attach
