@@ -54,7 +54,24 @@ CACHE_MAX = 512
 _db_lock = threading.Lock()
 _db = None
 
-STATE = {"ready": False, "error": None, "progress": "starting"}
+STATE = {"ready": False, "error": None, "progress": "starting", "count": None}
+
+
+def _count_async():
+    # Exact row count, computed once in the background on a private
+    # connection with a real page cache. A COUNT(*) on the 6 GB places
+    # table through the request path's 4 MB cache takes minutes and,
+    # under the db lock, blocks every lookup and health check behind it.
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True,
+                               check_same_thread=False)
+        conn.execute("PRAGMA cache_size = -64000")
+        STATE["count"] = conn.execute(
+            "SELECT COUNT(*) FROM places").fetchone()[0]
+        conn.close()
+        print(f"store count ready: {STATE['count']}", flush=True)
+    except Exception as e:
+        print(f"store count failed (non-fatal): {e}", flush=True)
 
 
 def get_db():
@@ -83,9 +100,10 @@ def _download_store():
                     break
                 out.write(chunk)
         os.replace(tmp, DB_PATH)
-        get_db().execute("SELECT COUNT(*) FROM places").fetchone()
+        get_db().execute("SELECT 1 FROM places LIMIT 1").fetchone()
         STATE["ready"] = True
         STATE["progress"] = "ready"
+        threading.Thread(target=_count_async, daemon=True).start()
         print("store bootstrap complete", flush=True)
     except Exception as e:
         STATE["error"] = str(e)
@@ -138,6 +156,7 @@ def ensure_store():
     if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0:
         STATE["ready"] = True
         STATE["progress"] = "ready"
+        threading.Thread(target=_count_async, daemon=True).start()
         return
     if not DB_URLS:
         STATE["error"] = "store file missing and BIZ_LOOKUP_DB_URLS not set"
@@ -357,13 +376,9 @@ class Handler(BaseHTTPRequestHandler):
                                  "error": STATE["error"],
                                  "attribution": ATTRIBUTION})
                 return
-            try:
-                with _db_lock:
-                    n = get_db().execute("SELECT COUNT(*) FROM places").fetchone()[0]
-                self._json(200, {"ok": True, "businesses": n,
-                                 "attribution": ATTRIBUTION})
-            except Exception as e:
-                self._json(500, {"ok": False, "error": str(e)})
+            # O(1) by design: never query the store from a health check.
+            self._json(200, {"ok": True, "businesses": STATE.get("count"),
+                             "attribution": ATTRIBUTION})
             return
         if parsed.path != "/lookup":
             self._json(404, {"error": "not_found"})
