@@ -1,0 +1,19 @@
+# Example Render blueprint for the Business Lookup service on the FREE
+# tier: no persistent disk. The store is downloaded at boot from
+# BIZ_LOOKUP_DB_URLS (parts of one gzip stream, hosted anywhere with a
+# direct-download URL) and held on the ephemeral disk. Expect a slow
+# first response after every cold start / redeploy while it downloads.
+services:
+  - type: web
+    name: phase-business-lookup
+    runtime: python
+    plan: free
+    rootDir: services/business-lookup
+    buildCommand: ""
+    startCommand: python lookup_service.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: BIZ_LOOKUP_DB
+        value: /tmp/biz_lookup.db
+      - key: BIZ_LOOKUP_DB_URLS
+        sync: false # comma-separated part URLs, in order
