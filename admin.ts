@@ -18,7 +18,7 @@ import { resolveBearerUserId } from "./auth.js";
 import { checkRateLimit as sharedCheckRateLimit, clientIpFromHeaders } from "./rate-limit.js";
 import { auditLog, createChain, LedgerError, store as ledgerStore } from "./sovereign-ledger-core.js";
 import { dbQuery, dbQueryOne } from "./db.js";
-import { getIssuanceStore } from "./issuance.js";
+import { getIssuanceStore, cleanGoogleRating } from "./issuance.js";
 import { ensureLinkVerdicts, normalizeLinkStatus } from "./link-check.js";
 import {
   getFeeConfig,
@@ -238,6 +238,7 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
             .filter((s) => s && typeof s.url === "string" && s.url.trim())
             .map((s) => ({ platform: typeof s.platform === "string" ? s.platform.trim() : "", url: s.url.trim() }))
         : [];
+      const googleRating = cleanGoogleRating((body as Record<string, unknown>).googleRating);
 
       const idemRaw = ctx.req.headers["idempotency-key"] ?? ctx.req.headers["x-idempotency-key"];
       const idemHeader = Array.isArray(idemRaw) ? idemRaw[0] : idemRaw;
@@ -279,6 +280,7 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
         socialProfiles,
         websiteUrl,
         logoUrl: null,
+        googleRating,
         linkStatus,
         priceUsd,
         totalShares,
@@ -352,20 +354,23 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
   });
 
   // --- PATCH /api/v1/admin/coins/:id — admin override for coin metadata ---
-  // Updates tagline, websiteUrl, socialProfiles. For support interventions.
+  // Updates tagline, websiteUrl, socialProfiles, googleRating. For support
+  // interventions. Gate: admin session OR the coin-factory key (same gate
+  // as the factory create/delete), so batch directory coins can be
+  // enriched with their public socials + Google rating by the operator.
   route("PATCH", "/api/v1/admin/coins/:id", async (ctx: AdminCtx) => {
     try {
       rateLimitAdmin(ctx);
-      const adminId = await requireAdmin(ctx);
+      const { userId: adminId } = await requireCoinFactoryAdmin(ctx);
       const coinId = ctx.params.id;
       const body = asRecord(ctx.body);
       const coin = await dbQueryOne(
-        `SELECT id, draft_id AS "draftId" FROM issuance_coins WHERE id = $1`,
+        `SELECT id, draft_id AS "draftId", link_status AS "linkStatus" FROM issuance_coins WHERE id = $1`,
         [coinId]
       );
       if (!coin) throw new HttpError(404, "coin_not_found", "No coin with that id.");
       const out: Record<string, unknown> = {};
-      if (coin.draftId && ("socialProfiles" in body || "tagline" in body)) {
+      if (coin.draftId && ("socialProfiles" in body || "tagline" in body || "googleRating" in body)) {
         const sets: string[] = [];
         const params: unknown[] = [];
         if ("socialProfiles" in body) {
@@ -380,6 +385,12 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
           sets.push(`tagline = $${params.length}`);
           out.tagline = body.tagline;
         }
+        if ("googleRating" in body) {
+          const gr = cleanGoogleRating(body.googleRating);
+          params.push(gr ? JSON.stringify(gr) : null);
+          sets.push(`google_rating = $${params.length}`);
+          out.googleRating = gr;
+        }
         if (sets.length > 0) {
           params.push(coin.draftId);
           await dbQuery(
@@ -392,6 +403,23 @@ export function mountAdminRoutes(deps: AdminMountDeps): void {
         const w = body.websiteUrl == null || String(body.websiteUrl).trim() === "" ? null : String(body.websiteUrl).trim();
         await dbQuery(`UPDATE issuance_coins SET website_url = $1 WHERE id = $2`, [w, coinId]);
         out.websiteUrl = w;
+      }
+      // Liveness verdicts for social URLs set here, merged into the
+      // coin's stored map (same contract as the owner PATCH): a profile
+      // only counts for Cred once its URL carries a live verdict.
+      if (Array.isArray(body.socialProfiles) && body.socialProfiles.length > 0) {
+        const urls = (body.socialProfiles as Array<{ url?: unknown }>)
+          .map((x) => (typeof x?.url === "string" ? x.url.trim() : ""))
+          .filter(Boolean);
+        if (urls.length > 0) {
+          const before = normalizeLinkStatus(coin.linkStatus);
+          const merged = await ensureLinkVerdicts(urls, before);
+          if (Object.keys(merged).length !== Object.keys(before).length) {
+            await dbQuery(`UPDATE issuance_coins SET link_status = $1::jsonb WHERE id = $2`,
+              [JSON.stringify(merged), coinId]);
+          }
+          out.linkStatus = merged;
+        }
       }
       await auditLog(adminId, "admin_coin_updated", "issuance_coin", coinId, out);
       sendJson(ctx.res, 200, { updated: true, id: coinId, ...out });
