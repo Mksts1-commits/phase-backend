@@ -18,11 +18,18 @@
  * - Trade rows record GROSS target units (the buyer receives net of the
  *   <=80bps + 1-coin Phase fee). The fee wedge is negligible against
  *   negotiated ratios and is documented, not hidden.
- * - Points are size-weighted (VWAP-style) into one point per day with
- *   swaps, weighted by the coin's own units in each swap, so one lopsided
- *   peer-negotiated swap cannot spike the line. Days without swaps
- *   contribute NO point — the frontend bridges gaps with straight segments
- *   (standard chart behaviour) and must never invent points.
+ * - Aggregation (revised 2026-11-11, at the founder's direction): the
+ *   series is a FLOW, not a daily summary. Every swap appends one point
+ *   per coin involved, in chronological order; each point is the running
+ *   cumulative average of that coin's implied prices up to and including
+ *   the swap, weighted by size x volume — the coin's own units in the
+ *   swap (size) times the USD value those units imply (volume) — so a
+ *   big barter bends the line far more than a dust swap, and one lopsided
+ *   peer-negotiated swap still cannot spike it. Swaps are the only source
+ *   of points: no swaps, no points — the frontend bridges between real
+ *   points with straight segments (standard chart behaviour) and must
+ *   never invent points. Series are thinned to at most 240 points
+ *   (keeping the final point) so the directory payload stays bounded.
  * - Degrades to nulls (unknown) on any DB failure, so a directory/my-coins
  *   read never fails on the ghost series. The frontend draws the ghost
  *   line only when the series is a non-empty array.
@@ -39,57 +46,66 @@ export interface SwapRow {
 }
 
 /**
- * Pure swap-implied-price math (no DB): one size-weighted point per coin
- * per UTC day with swaps. Kept separate from the query code so it can be
- * unit-tested without a database. Only coins present in `coinIds` are
- * returned; swaps referencing other coins still contribute implied points
- * for the in-scope side.
+ * Pure swap-implied-price math (no DB): the per-swap flow series.
+ * Kept separate from the query code so it can be unit-tested without a
+ * database. Only coins present in `coinIds` are returned; swaps
+ * referencing other coins still contribute implied points for the
+ * in-scope side. `swaps` must be chronological (the query orders by
+ * created_at) — each coin's points come out in swap order.
  */
-export function ghostDailyVwap(
+export function ghostFlowSeries(
   swaps: SwapRow[],
   refs: Map<string, number>,
   coinIds: Set<string>,
 ): Map<string, number[]> {
-  const buckets = new Map<string, Map<string, { wsum: number; w: number }>>();
-  const addPoint = (coinId: string, day: string, price: number, weight: number) => {
+  const MAX_POINTS = 240;
+  const acc = new Map<string, { wsum: number; w: number; pts: number[] }>();
+  const push = (coinId: string, price: number, ownUnits: number) => {
     if (!coinIds.has(coinId)) return;
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(weight) || weight <= 0) return;
-    let byDay = buckets.get(coinId);
-    if (!byDay) { byDay = new Map(); buckets.set(coinId, byDay); }
-    const b = byDay.get(day) ?? { wsum: 0, w: 0 };
-    b.wsum += price * weight;
-    b.w += weight;
-    byDay.set(day, b);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ownUnits) || ownUnits <= 0) return;
+    // Size x volume weighting: size = the coin's own units in the swap;
+    // volume = the USD value those units imply at the swap's own ratio.
+    const volume = price * ownUnits;
+    const weight = ownUnits * volume;
+    if (!Number.isFinite(weight) || weight <= 0) return;
+    let a = acc.get(coinId);
+    if (!a) { a = { wsum: 0, w: 0, pts: [] }; acc.set(coinId, a); }
+    a.wsum += price * weight;
+    a.w += weight;
+    a.pts.push(a.wsum / a.w);
   };
   for (const r of swaps) {
     const units = Number(r.units);
     const offerUnits = r.offer_units == null ? NaN : Number(r.offer_units);
     if (!Number.isFinite(units) || units <= 0 || !Number.isFinite(offerUnits) || offerUnits <= 0) continue;
-    const day = new Date(r.created_at).toISOString().slice(0, 10);
     const refOffer = refs.get(r.offer_coin_id);
     const refTarget = refs.get(r.coin_id);
-    // Target coin's implied price, weighted by target units received.
-    if (refOffer != null) addPoint(r.coin_id, day, (offerUnits * refOffer) / units, units);
-    // Offer coin's implied price, weighted by offer units given.
-    if (refTarget != null) addPoint(r.offer_coin_id, day, (units * refTarget) / offerUnits, offerUnits);
+    // Target coin's implied price; its own units are the units received.
+    if (refOffer != null) push(r.coin_id, (offerUnits * refOffer) / units, units);
+    // Offer coin's implied price; its own units are the units given.
+    if (refTarget != null) push(r.offer_coin_id, (units * refTarget) / offerUnits, offerUnits);
   }
   const out = new Map<string, number[]>();
   for (const id of coinIds) {
-    const byDay = buckets.get(id);
-    if (!byDay) { out.set(id, []); continue; }
-    const days = [...byDay.keys()].sort();
-    out.set(id, days.map((d) => {
-      const b = byDay.get(d)!;
-      return b.wsum / b.w;
-    }));
+    const a = acc.get(id);
+    if (!a) { out.set(id, []); continue; }
+    let pts = a.pts;
+    if (pts.length > MAX_POINTS) {
+      const step = Math.ceil(pts.length / MAX_POINTS);
+      const thinned = pts.filter((_, i) => i % step === 0);
+      if (thinned[thinned.length - 1] !== pts[pts.length - 1]) thinned.push(pts[pts.length - 1]);
+      pts = thinned;
+    }
+    out.set(id, pts);
   }
   return out;
 }
 
 /**
  * Compute the ghost series for a set of coins (issuance_coins UUIDs).
- * Returns a map coin id -> daily size-weighted swap-implied USD prices,
- * chronological (oldest first). Null = unknown (DB failure); [] = no swaps.
+ * Returns a map coin id -> per-swap flow of cumulative size x volume
+ * weighted swap-implied USD prices, chronological (oldest first).
+ * Null = unknown (DB failure); [] = no swaps.
  */
 export async function computeGhostSeries(
   coinIds: string[],
@@ -137,7 +153,7 @@ export async function computeGhostSeries(
         if (Number.isFinite(p) && p > 0) ref.set(r.id, p);
       }
     }
-    const series = ghostDailyVwap(
+    const series = ghostFlowSeries(
       swapRows.rows as SwapRow[],
       ref,
       new Set(coinIds),
