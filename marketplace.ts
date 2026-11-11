@@ -31,6 +31,7 @@ import {
 import { getIssuanceStore, type IssuanceCoin } from "./issuance.js";
 import { computeCoinVolumes, coinTotalFloatShares } from "./volume.js";
 import { computeGhostSeries } from "./ghost.js";
+import { computeGhostSeriesNetwork, type GhostCoinMeta } from "./ghost2.js";
 import {
   computeLegitimacyForCoinsByIssuer,
   publicLegitimacyView,
@@ -1754,13 +1755,28 @@ export function mountMarketplaceRoutes(deps: MarketplaceMountDeps): void {
       // Never fails the directory: on DB trouble every coin gets nulls
       // (frontend shows no accent) instead of a false red.
       const volumes = await computeCoinVolumes(floatByCoin);
-      const ghosts = await computeGhostSeries([...floatByCoin.keys()]);
+      // Ghost 2.0 (network price discovery): a joint log-price solve over
+      // the whole swap graph — cash-anchored, ask prices never anchor, and
+      // per-coin provenance rides along as ghostMeta30d. Any failure falls
+      // back to Ghost 1.0 so the directory never breaks on ghost.
+      const ghostCoinIds = [...floatByCoin.keys()];
+      let ghosts: Map<string, number[] | null>;
+      let ghostMeta: Map<string, GhostCoinMeta | null> | null = null;
+      try {
+        const g2 = await computeGhostSeriesNetwork(ghostCoinIds);
+        ghosts = g2.series;
+        ghostMeta = g2.meta;
+      } catch (e) {
+        console.error("[ghost2] network solve failed — falling back to ghost 1.0", e);
+        ghosts = await computeGhostSeries(ghostCoinIds);
+      }
       for (const row of out as Array<Record<string, unknown>>) {
         const v = volumes.get(row.id as string);
         row.volumePctFloat = v?.volumePctFloat ?? null;
         row.volumeTier = v?.volumeTier ?? null;
         row.priceSeries30d = v?.priceSeries30d ?? null;
         row.ghostSeries30d = ghosts.get(row.id as string) ?? null;
+        row.ghostMeta30d = ghostMeta?.get(row.id as string) ?? null;
       }
       const coinsPayload = { ...NETWORK_ENVELOPE, coins: out };
       coinsCache = { at: Date.now(), payload: coinsPayload };
