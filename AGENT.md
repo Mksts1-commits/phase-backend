@@ -30,6 +30,37 @@ flow, your user owns a live chain and a minted coin supply on it.
 4. **Legal name + explicit acceptance** — see step 4. This is a real legal
    agreement. Never skip showing it to your user.
 
+## Look the business up first
+
+If your user has named a business — theirs, or the one the coin is for —
+look it up **before** the intake form. One call, no account needed:
+
+```
+GET /api/v1/businesses/lookup?q=<name>&city=<city>&region=<ON>&country=<CA>
+```
+
+Pass whatever you have; `q` is the only required parameter. Add `city`,
+`region` and `country` whenever the user mentioned them. (If the user
+gave you nothing but "mint my coin" and no business name, skip this and
+go straight to the form below.)
+
+- **One clear match** — the response carries `draftSeed` and a ready-made
+  `snapshotLink`. Pre-fill the intake from `draftSeed`, tell the user what
+  you found ("Found it — Sarpa Restaurant, 13311 Yonge St, Richmond Hill")
+  and let them confirm or correct it. Anything the user edits wins over
+  the dataset, always.
+- **`ambiguous: true`** — the name exists in several cities and the API
+  deliberately did not pick one. Ask which city — one short question,
+  tappable options if your surface supports them — then call again with
+  `city`. Never guess between cities.
+- **`verify: true`** on a match — a low-confidence record. You may show
+  its fields, but present them as "to confirm", never as fact.
+- **No matches, or a 503** — fall back to the intake form below and your
+  own web research. Never invent a field the lookup did not return: the
+  dataset has no Google rating and its socials are partial, so fill those
+  gaps with your own quick web pass and leave anything you cannot verify
+  blank.
+
 ## Your first reply — one simple form, not an interrogation
 
 Most users arrive with nothing but "mint my coin" and this link. When
