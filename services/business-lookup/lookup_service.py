@@ -471,7 +471,12 @@ def lookup(name, city, region, country, limit):
                  or norm(top.get("name")) == norm(name))
         result["ambiguous"] = not (unambiguous and solid)
         if unambiguous and solid:
-            sp = {"name": top["name"], "mode": "sketch"}
+            econ = economics_standard()
+            sp = {"name": top["name"], "mode": "sketch",
+                  "price": str(econ["price"]),
+                  "cap": str(econ["marketCap"]),
+                  "supply": str(econ["supply"])}
+            result["economics"] = econ
             if top.get("website"):
                 sp["website"] = top["website"]
             for k, v in (top.get("socials") or {}).items():
@@ -498,6 +503,127 @@ def lookup(name, city, region, country, limit):
         _cache[key] = result
         while len(_cache) > CACHE_MAX:
             _cache.popitem(last=False)
+    return result
+
+
+ECON_BASIS_BUSINESS = (
+    "Phase standard starting point ($100K at $0.50). If the owner shares "
+    "their annual profit, the outreach model uses profit x 20 as the "
+    "suggested cap instead. The owner sets their own numbers at mint.")
+ECON_BASIS_PROPERTY_VALUE = (
+    "Anchored to the property value provided. The owner sets their own "
+    "numbers at mint.")
+ECON_BASIS_PROPERTY_DEFAULT = (
+    "Phase standard starting point ($100K at $0.50). If the owner knows "
+    "the property's value, suggest that as the cap instead.")
+
+
+def economics(cap, basis):
+    cap = int(cap)
+    return {"price": 0.5, "marketCap": cap, "supply": cap * 2,
+            "floatPct": 5, "basis": basis}
+
+
+def economics_standard():
+    return economics(100_000, ECON_BASIS_BUSINESS)
+
+
+RESIDENTIAL_TYPES = {
+    "house", "detached", "apartments", "apartment", "residential",
+    "terrace", "townhouse", "bungalow", "semidetached_house",
+    "static_caravan", "dormitory", "condominium"}
+COMMERCIAL_TYPES = {
+    "office", "retail", "commercial", "industrial", "warehouse",
+    "hotel", "supermarket", "restaurant", "shop", "mall", "bank"}
+
+
+def property_lookup(address, value=None):
+    """Address -> normalized property record (Nominatim) + snapshot seed.
+
+    Seeds only when the result is identifiable: the query's house number
+    matches the top result's, or there is a single result. Otherwise the
+    candidates come back unseeded, same contract as the business lookup.
+    """
+    params = {"q": address, "format": "jsonv2", "addressdetails": "1",
+              "extratags": "1", "limit": "3"}
+    url = ("https://nominatim.openstreetmap.org/search?"
+           + urllib.parse.urlencode(params))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "PhaseLookup/1.0 (+https://is.gd/mintmycoin)",
+        "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            rows = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as e:
+        print(f"property_search nominatim failed: {e!r}", flush=True)
+        return {"query": {"address": address}, "matches": [],
+                "source": "nominatim", "attribution": OSM_ATTRIBUTION,
+                "error": "upstream_error"}
+    matches = []
+    for r in rows or []:
+        a = r.get("address") or {}
+        street = " ".join(x for x in [a.get("house_number"),
+                                      a.get("road")] if x) \
+            or (r.get("display_name") or "").split(",")[0]
+        locality = (a.get("city") or a.get("town") or a.get("village")
+                    or a.get("suburb") or a.get("county") or "")
+        ptype = r.get("type") or ""
+        if ptype in RESIDENTIAL_TYPES:
+            subsection = "Residential"
+        elif ptype in COMMERCIAL_TYPES:
+            subsection = "Commercial"
+        elif r.get("class") == "building":
+            subsection = "Residential"
+        else:
+            subsection = None
+        matches.append({
+            "street": street,
+            "locality": locality,
+            "region": a.get("state") or "",
+            "postcode": a.get("postcode") or "",
+            "country": a.get("country") or "",
+            "propertyType": ptype,
+            "subsection": subsection,
+            "displayName": r.get("display_name") or "",
+            "lat": r.get("lat"), "lon": r.get("lon"),
+            "osmType": r.get("osm_type"), "osmId": r.get("osm_id"),
+            "houseNumber": a.get("house_number") or "",
+        })
+    result = {"query": {"address": address}, "matches": matches,
+              "source": "nominatim", "attribution": OSM_ATTRIBUTION}
+    if not matches:
+        return result
+    qnum = re.search(r"\b(\d+)\b", address)
+    top = matches[0]
+    identifiable = (len(matches) == 1 or
+                    (qnum and top.get("houseNumber") == qnum.group(1)))
+    if not identifiable:
+        result["ambiguous"] = True
+        return result
+    econ = (economics(value, ECON_BASIS_PROPERTY_VALUE) if value
+            else economics(100_000, ECON_BASIS_PROPERTY_DEFAULT))
+    name = top["street"] + (", " + top["locality"] if top["locality"] else "")
+    tagline = ((top["subsection"] or "Property") + " in "
+               + top["locality"]) if top["locality"] else ""
+    osm_ref = ""
+    if top.get("osmType") and top.get("osmId"):
+        osm_ref = (f"https://www.openstreetmap.org/"
+                   f"{top['osmType']}/{top['osmId']}")
+    sp = {"name": name, "mode": "sketch", "price": str(econ["price"]),
+          "cap": str(econ["marketCap"]), "supply": str(econ["supply"])}
+    if tagline:
+        sp["tagline"] = tagline
+    result["economics"] = econ
+    result["snapshotParams"] = sp
+    result["snapshotLink"] = (SNAPSHOT_BASE + "?"
+                              + urllib.parse.urlencode(sp))
+    result["draftSeed"] = {
+        "name": name, "category": "Real Estate",
+        "subsection": top["subsection"], "tagline": tagline,
+        "referenceUrl": osm_ref, "locality": top["locality"],
+        "region": top["region"], "country": top["country"],
+        "postcode": top["postcode"], "lat": top["lat"], "lon": top["lon"],
+    }
     return result
 
 
@@ -541,6 +667,28 @@ class Handler(BaseHTTPRequestHandler):
             # O(1) by design: never query the store from a health check.
             self._json(200, {"ok": True, "businesses": STATE.get("count"),
                              "attribution": ATTRIBUTION})
+            return
+        if parsed.path == "/property":
+            ip = (self.headers.get("x-forwarded-for") or
+                  self.client_address[0]).split(",")[0].strip()
+            if not rate_ok(ip):
+                self._json(429, {"error": "rate_limited",
+                                 "message": "Too many lookups; slow down."})
+                return
+            address = (qs.get("address") or [""])[0].strip()
+            if not address:
+                self._json(400, {"error": "missing_address",
+                                 "message": "Query parameter `address` (full property address) is required."})
+                return
+            value = None
+            raw_value = (qs.get("value") or [""])[0].strip()
+            if raw_value:
+                try:
+                    value = int(float(raw_value.replace(",", "")
+                                      .replace("$", "")))
+                except ValueError:
+                    value = None
+            self._json(200, property_lookup(address, value))
             return
         if parsed.path != "/lookup":
             self._json(404, {"error": "not_found"})
