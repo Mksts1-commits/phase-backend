@@ -48,6 +48,9 @@ DB_URLS = [u.strip() for u in os.environ.get("BIZ_LOOKUP_DB_URLS", "").split(","
 PORT = int(os.environ.get("PORT", "8090"))
 SNAPSHOT_BASE = "https://mksts1-commits.github.io/phase-android/app/snapshot.html"
 ATTRIBUTION = "Business data © Overture Maps Foundation (CDLA Permissive 2.0)"
+OSM_ATTRIBUTION = "Business data © OpenStreetMap contributors (via Photon)"
+PHOTON_URL = "https://photon.komoot.io/api/"
+PHOTON_TIMEOUT = 6  # seconds; the fallback must stay inside the proxy budget
 RATE_LIMIT_PER_MIN = 120
 CACHE_MAX = 512
 
@@ -270,13 +273,80 @@ def search(name, city, region, country, limit):
             "lat": float(r["lat"]) if r.get("lat") else None,
             "lon": float(r["lon"]) if r.get("lon") else None,
             "matchedVia": via.get(r["id"], "name"),
-            "verify": conf < 0.5,
+            "verify": conf < 0.5 or (via.get(r["id"]) == "name-prefix"
+                                     and r.get("name_norm") != name_norm_full),
         })
     return out
 
 
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
+
+
+def photon_search(name, city, region, country, limit):
+    """Fallback over OpenStreetMap data via the public Photon service.
+
+    Used only when the local store has no match (the store is Canada;
+    Photon is global). Returns (matches, seedable). `seedable` is False
+    when a city was requested but no result sits in it — same-name
+    businesses in other cities are shown as candidates but never
+    auto-picked for the snapshot/draft seed, the same guardrail the
+    store search follows. Contact fields are usually absent in OSM;
+    the minting agent enriches them with live research.
+    """
+    q = name + (f", {city}" if city else "")
+    params = {"q": q, "limit": str(min(max(limit * 2, 5), 10)), "lang": "en"}
+    req = urllib.request.Request(
+        PHOTON_URL + "?" + urllib.parse.urlencode(params),
+        headers={"User-Agent": "phase-lookup/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=PHOTON_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return [], True
+    want_country = (country or "").upper()
+    want_city = norm(city)
+    out, in_city = [], []
+    for feat in data.get("features") or []:
+        p = feat.get("properties") or {}
+        if not p.get("name"):
+            continue
+        cc = (p.get("countrycode") or "").upper()
+        if want_country and cc and cc != want_country:
+            continue
+        coords = (feat.get("geometry") or {}).get("coordinates") or []
+        addr = " ".join(x for x in [p.get("housenumber"), p.get("street")] if x)
+        m = {
+            "sourceId": f"osm:{p.get('osm_type')}/{p.get('osm_id')}",
+            "name": p.get("name"),
+            "category": (p.get("osm_value") or "").replace("_", " ") or None,
+            "address": addr or None,
+            "locality": p.get("city") or p.get("locality") or p.get("town"),
+            "region": p.get("state"),
+            "postcode": p.get("postcode"),
+            "country": cc or None,
+            "phone": p.get("phone"),
+            "website": p.get("website"),
+            "email": None,
+            "socials": {},
+            "brand": None,
+            "confidence": 0.65,
+            "lat": coords[1] if len(coords) > 1 else None,
+            "lon": coords[0] if coords else None,
+            "matchedVia": "photon",
+            "verify": False,
+        }
+        out.append(m)
+        if want_city and norm(m.get("locality")) == want_city:
+            in_city.append(m)
+    if want_city:
+        if in_city:
+            return in_city[:limit], True
+        for m in out:
+            m["verify"] = True
+            m["confidence"] = 0.4
+        return out[:limit], False
+    return out[:limit], True
 
 
 def lookup(name, city, region, country, limit):
@@ -287,13 +357,22 @@ def lookup(name, city, region, country, limit):
             _cache.move_to_end(key)
             return _cache[key]
     matches = search(name, city, region, country, limit)
+    source = "overture"
+    seedable = True
+    if not matches:
+        matches, seedable = photon_search(name, city, region, country, limit)
+        if matches:
+            source = "photon"
     result = {
         "query": {"q": name, "city": city, "region": region,
                   "country": country},
         "matches": matches,
-        "attribution": ATTRIBUTION,
+        "source": source,
+        "attribution": OSM_ATTRIBUTION if source == "photon" else ATTRIBUTION,
     }
-    if matches:
+    if matches and not seedable:
+        result["ambiguous"] = True
+    if matches and seedable:
         top = matches[0]
         # Unambiguous only when: a single match, a city was given, every
         # match sits in the top match's locality, or the top match is an
@@ -307,8 +386,15 @@ def lookup(name, city, region, country, limit):
             or bool(city)
             or same_locality
         )
-        result["ambiguous"] = not unambiguous
-        if unambiguous:
+        # A partial-token (name-prefix) hit that is not the exact name is
+        # a candidate, not an identification — never seed a snapshot from
+        # it. (The progressive prefix fallback can degrade a query like
+        # "In-N-Out Burger" to a single generic token and surface
+        # unrelated local businesses at full dataset confidence.)
+        solid = (top.get("matchedVia") != "name-prefix"
+                 or norm(top.get("name")) == norm(name))
+        result["ambiguous"] = not (unambiguous and solid)
+        if unambiguous and solid:
             sp = {"name": top["name"], "mode": "sketch"}
             if top.get("website"):
                 sp["website"] = top["website"]
