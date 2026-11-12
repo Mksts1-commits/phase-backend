@@ -63,6 +63,55 @@ Agreement, the email opens the account, and the link and the one-liner
 become the coin's public listing. If your user asks why you need them,
 that's the one-line answer.
 
+## Be interactive by default — on every surface
+
+The widgets in the next section are the richest version of this, but
+the rule applies everywhere, MCP or not. Most users reach you in a
+chat that supports buttons, chips, cards, or quick replies — use them
+for every decision in this flow. A user should be able to finish a
+mint by tapping, not typing.
+
+- **One decision per prompt, as tappable choices.** Never ask an open
+  question when the answers are enumerable. Keep it to four options
+  plus free text, put the recommended option first, and mark it as
+  the default — a tap on it is a complete answer.
+- **Intake.** After the opening form, resolve anything missing with
+  chips, not questions: issuer path (**Capital / Business / Asset**),
+  ticker (**Suggest one for me** — then offer 2–3 generated tickers
+  as taps), reference link (**Skip for now** — never block on it).
+- **Economics.** Lead with one tap: **Standard deal — $0.50, $100K
+  cap, 95% retained** vs **Customize**. Customizing is presets, not
+  typing: price ($0.10 / $0.25 / $0.50 / $1.00), retained split
+  (95% / 90% / 80% / 50%), each tap updating the math before the
+  draft is created.
+- **Consent stays a deliberate tap.** Signing the agreement and
+  minting get their own explicit, labelled tap (**Sign & mint**)
+  after the recap — never pre-selected, never bundled into another
+  choice. Interactive never means casual about consent.
+- **Cred is a checklist, not a lecture.** When you show a coin's
+  Phase Cred, present the next unearned items as a tappable list —
+  **Upload business licence**, **Add a logo**, **Link a reference
+  URL** — one tap starts that step, and the list visibly fills in as
+  items are earned.
+- **Marketplace is cards.** Present coins as cards with **Watch**,
+  **More info** (the issuer's public filings), and **Get a quote**
+  taps. A quote result carries one action: **Open in the app to
+  buy** — trading itself stays manual, in the app, under the user's
+  own login.
+- **Swap offers are cards too.** An incoming offer is a card showing
+  the exact barter (their coin and ratio against yours) with
+  **Accept**, **Counter**, and **Decline**. The user's tap is their
+  decision; you then carry it out via the offers API. Never accept,
+  counter, or decline on your own initiative.
+- **Always end with the next taps.** After any milestone — minted,
+  Cred item earned, offer answered — close with 2–3 next actions as
+  choices (**View dashboard**, **Boost my Cred**, **Browse the
+  marketplace**, **Share my coin**). The user should never have to
+  wonder what to type next.
+- **Fallback.** Only when the surface genuinely has no interactive
+  elements, use the short text forms in this doc — same defaults,
+  same order, same consent bar.
+
 ## Interactive widgets — use them when Phase MCP is connected
 
 If your host has Phase connected as an MCP server, you have four
@@ -375,8 +424,12 @@ for them — investigate first. The marketplace gives you everything public:
    category. A $5B market cap with zero sales history is a listing price,
    not a market price — say so.
 2. **Read the issuer's materials.** `GET /api/v1/coins/:id/documents` lists
-   the coin's published documents (whitepapers, audits, filings) — public,
-   no auth. Read them before you opine.
+   the coin's public filings (business licences, deeds, whitepapers,
+   audits) — public, no auth. Read them before you opine. Only filings
+   are public: verification documents (government ID, bank statements,
+   financial reports) are never returned to anyone but the coin's owner
+   — they do not appear in this list at all. In the app, buyers reach
+   the same filings from the coin's **More info** view.
 3. **Check their presence.** Follow the social links and website from the
    coin listing. A coin with no verifiable issuer presence is a red flag —
    tell your user.
@@ -493,6 +546,18 @@ How to use it:
   - **Coin logo (4)**: set `logoUrl` — on the issuance draft before
     minting, or later via the coin-profile PATCH — to an image URL
     your user provides.
+- **Documents come in two classes — relay this part plainly.**
+  *Verification* documents — government ID (`government_id`), bank
+  statements and financial reports (`bank_statement` /
+  `financial_report`), and anything uploaded as `other` — are private:
+  the platform shows only the Cred points they earn, the files are
+  downloadable solely by the coin's owner, and they never appear in
+  any public list. *Filings* — business licences and registration,
+  deeds, mortgages, property tax records, leases, and for
+  collectables, certificates of authenticity, appraisals and
+  provenance records — are public: buyers can read and download them
+  from the coin's **More info** view in the app and via
+  `GET /api/v1/coins/:id/documents`. Never tell an issuer that their
 - **Links are verified live.** The reference URL, social profile,
   and logo points are earned only by links that actually work: the
   platform checks each URL once (when it's set, or on first scoring
