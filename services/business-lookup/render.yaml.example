@@ -1,0 +1,19 @@
+# Example Render blueprint for the Business Lookup service.
+# Persistent disks require a paid plan. Copy the lookup store
+# (biz_lookup.db, ~6.8 GB) onto the disk at /data once after creation.
+services:
+  - type: web
+    name: phase-business-lookup
+    runtime: python
+    plan: starter
+    rootDir: services/business-lookup
+    buildCommand: ""
+    startCommand: python lookup_service.py
+    healthCheckPath: /healthz
+    disk:
+      name: bizdata
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: BIZ_LOOKUP_DB
+        value: /data/biz_lookup.db

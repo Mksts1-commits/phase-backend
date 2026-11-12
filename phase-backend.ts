@@ -75,6 +75,7 @@ import { mountMcpRoutes } from "./mcp.js";
 import { mountLegitimacyRoutes } from "./legitimacy.js";
 import { mountAdminRoutes } from "./admin.js";
 import { mountLegalDocsRoutes } from "./legal-docs.js";
+import { mountBusinessRoutes } from "./businesses.js";
 import { mountSocialRoutes } from "./social-auth.js";
 import { mountAnnounceRoutes } from "./social-announce.js";
 import { migrate as migrateFundingDb, migrate as migrateMainSchema } from "./db.js";
@@ -1200,6 +1201,11 @@ mountAdminRoutes({ route, sendJson, HttpError });
 // The completed Phase Coin Minting Agreement (base PDF) plus per-signature
 // auto-populated copies (Article 20 block filled from the signature record).
 mountLegalDocsRoutes({ route });
+
+// --- 8e-viib. Business lookup (see businesses.ts) ---
+// Public read-only proxy to the standalone lookup service
+// (BUSINESS_LOOKUP_URL); answers 503 until that env var is set.
+mountBusinessRoutes({ route, sendJson, HttpError });
 
 // --- 8e-viii. Boot reconciliation for interrupted settlements ---
 // Runs after mounts; the ledger restore is awaited inside.
