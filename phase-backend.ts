@@ -76,6 +76,7 @@ import { mountLegitimacyRoutes } from "./legitimacy.js";
 import { mountAdminRoutes } from "./admin.js";
 import { mountLegalDocsRoutes } from "./legal-docs.js";
 import { mountBusinessRoutes } from "./businesses.js";
+import { mountCreatorRoutes } from "./creators.js";
 import { mountSocialRoutes } from "./social-auth.js";
 import { mountAnnounceRoutes } from "./social-announce.js";
 import { migrate as migrateFundingDb, migrate as migrateMainSchema } from "./db.js";
@@ -1206,6 +1207,11 @@ mountLegalDocsRoutes({ route });
 // Public read-only proxy to the standalone lookup service
 // (BUSINESS_LOOKUP_URL); answers 503 until that env var is set.
 mountBusinessRoutes({ route, sendJson, HttpError });
+
+// --- 8e-viic. Creator lookup (see creators.ts) ---
+// Public read-only proxy to the standalone creator lookup service
+// (CREATOR_LOOKUP_URL); answers 503 until that env var is set.
+mountCreatorRoutes({ route, sendJson, HttpError });
 
 // --- 8e-viii. Boot reconciliation for interrupted settlements ---
 // Runs after mounts; the ledger restore is awaited inside.
