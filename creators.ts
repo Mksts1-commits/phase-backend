@@ -67,7 +67,12 @@ export function mountCreatorRoutes(deps: CreatorMountDeps): void {
       const username = (ctx.query.get("username") ?? "").trim();
       if (!username) {
         throw new HttpError(400, "missing_username",
-          "Query parameter `username` (TikTok handle) is required.");
+          "Query parameter `username` (social handle) is required.");
+      }
+      const platform = (ctx.query.get("platform") ?? "tiktok").trim().toLowerCase();
+      if (!["tiktok", "youtube", "x"].includes(platform)) {
+        throw new HttpError(400, "unsupported_platform",
+          "Query parameter `platform` must be tiktok, youtube or x.");
       }
       const base = (process.env.CREATOR_LOOKUP_URL ?? "").replace(/\/+$/, "");
       if (!base) {
@@ -76,6 +81,7 @@ export function mountCreatorRoutes(deps: CreatorMountDeps): void {
       }
       const upstream = new URL(`${base}/lookup`);
       upstream.searchParams.set("username", username);
+      upstream.searchParams.set("platform", platform);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 12_000);
       let resp: Response;
