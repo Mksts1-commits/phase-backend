@@ -61,17 +61,30 @@ go straight to the form below.)
   gaps with your own quick web pass and leave anything you cannot verify
   blank.
 
-## Look the creator up first (TikTok)
+The response also carries `economics` — the suggested starting numbers
+already inside the `snapshotLink` (price $0.50, market cap $100,000,
+supply 200,000, 5% float — the Phase standard). If the owner shares
+their **annual profit**, the suggested cap becomes **profit × 20** (the
+model behind the Phase outreach sketches): rebuild the snapshot link
+with `cap` set to that number and `supply` set to cap × 2, and use
+those numbers in the draft when the owner confirms them. A suggestion
+is never a valuation — the owner sets their own numbers at mint, and
+never justify a cap with earnings multiples or index comparisons in
+anything the user might forward.
 
-If the coin is for a TikTok creator — your user, or someone they name —
-and you have the handle, look it up **before** the intake form:
+## Look the creator up first (TikTok, YouTube, X)
+
+If the coin is for a creator — your user, or someone they name — and
+you have their handle on TikTok, YouTube or X, look it up **before**
+the intake form:
 
 ```
-GET /api/v1/creators/lookup?username=<handle>
+GET /api/v1/creators/lookup?platform=<tiktok|youtube|x>&username=<handle>
 ```
 
-The handle works with or without the `@` (a full tiktok.com link works
-too). No account needed. The response carries:
+`platform` defaults to `tiktok`. The handle works with or without the
+`@` (a full profile link works too; for YouTube a channel ID works as
+well). No account needed. The response carries:
 
 - **profile** — nickname, bio, verified flag, and live counts
   (followers, following, hearts, videos). Show your user what you
@@ -79,16 +92,53 @@ too). No account needed. The response carries:
   agent…'") and let them confirm it's the right account.
 - **draftSeed** — pre-fill the intake from it: name = nickname,
   suggested ticker from the handle, tagline = their bio, and the
-  profile URL as the reference URL + TikTok social (both earn Phase
-  Cred).
-- **snapshotLink** — the snapshot card built from the profile. Send
-  it in your first reply so they can see their coin before answering
-  anything.
+  profile URL as the reference URL + that platform's social (both
+  earn Phase Cred).
+- **economics** — a suggested starting market cap from audience size
+  ($10 per follower, $100K minimum, $50M maximum) at $0.50 with a 5%
+  float, already inside the snapshot link. It is a starting suggestion
+  the creator edits — never present it as a valuation of their channel.
+- **snapshotLink** — the snapshot card built from the profile, numbers
+  included. Send it in your first reply so they can see their coin
+  before answering anything.
+
+Instagram and Facebook have no public lookup (their pages need a
+login) — ask the user for the profile URL instead and seed it as the
+social + reference URL yourself; it earns the same Phase Cred.
 
 Anything the user edits wins over the lookup, always. A `404` just
 means the handle wasn't found — carry on with the plain form, never
-block on it. A `503` means creator lookup isn't configured on this
-deployment; skip it silently.
+block on it. A `400` means the platform isn't supported — only
+`tiktok`, `youtube` and `x` are. A `503` means creator lookup isn't
+configured on this deployment; skip it silently.
+
+## Look the property up first (real estate)
+
+If the coin is for a property and you have its address, look it up
+**before** the intake form:
+
+```
+GET /api/v1/assets/lookup?address=<full address>&value=<optional value>
+```
+
+No account needed. The response resolves the address against
+OpenStreetMap into a normalized property record:
+
+- **Identified** (one result, or the house number matches) — the
+  response carries `draftSeed` (name = street address, category
+  "Real Estate", subsection Residential or Commercial when the map
+  data says which), `economics`, and a ready-made `snapshotLink`.
+  Show the user what you found and let them confirm or correct it.
+- **`ambiguous: true`** — several addresses fit and the API
+  deliberately did not pick one. Show the candidates and ask which —
+  never guess between properties.
+- **The `value` parameter** — when the owner tells you roughly what
+  the property is worth, pass it: the suggested market cap anchors to
+  that value in the snapshot economics. Without it, the Phase standard
+  $100K applies. Either way it is a starting suggestion — the owner
+  sets their own numbers at mint.
+- **No matches, or a 503** — fall back to the intake form and your own
+  web research. Never invent a field the lookup did not return.
 
 ## Your first reply — one simple form, not an interrogation
 
