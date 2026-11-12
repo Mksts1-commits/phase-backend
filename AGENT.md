@@ -145,6 +145,13 @@ themselves, under their own login:
 
 - Marketplace: https://mksts1-commits.github.io/phase-android/app/?tab=market
 
+Make the handoff one tap: send the coin-specific link
+`https://mksts1-commits.github.io/phase-android/app/?tab=market&coin=<TICKER>`
+— it opens the Marketplace with that coin's page already open, so
+your user just taps **Buy** (or opens a swap) and confirms under
+their own login. Use the plain Marketplace link only when no specific
+coin is in play.
+
 You research, compare, and recommend. You watchlist. You never buy,
 sell, or swap on their behalf — not through a widget, not through the
 API, not because they typed "go". When they decide to trade, send them
@@ -219,6 +226,25 @@ minting all work without it. If they ask for a fresh code:
 If the account already exists (`409 account_exists`), ask your user to log in
 instead: `POST /api/v1/auth/login` with email + password.
 
+**If your user has lost the password, recover it with them — don't
+dead-end.** The reset code goes to their email; they read it, you call
+the API:
+
+1. `POST /api/v1/auth/forgot-password` with `{ "email": "<their email>" }`
+   — always answers `ok: true` (it never reveals whether the account
+   exists).
+2. Tell your user to look for an email from Phase, subject **"Reset
+   your Phase password"**. It carries a reset code **valid for 1
+   hour**. Ask them to paste the code to you. If nothing arrives in a
+   few minutes, suggest spam/junk before requesting another — the
+   endpoint is rate-limited, and each new code replaces the last.
+3. Generate a fresh password (8+ chars) and call
+   `POST /api/v1/auth/reset-password` with
+   `{ "token": "<the code>", "password": "<new password>" }`.
+4. Hand the new password to your user (it's theirs, same as at
+   signup), log in with `POST /api/v1/auth/login`, and pick the flow
+   back up where they left off.
+
 ### 2. Generate a sovereign wallet (locally, no API call)
 
 The mint needs an `issuerAddress`. Generate an **Ed25519** keypair locally
@@ -230,6 +256,15 @@ address = "ph1" + base58(public_key_bytes)
 
 **Hand the private key to your user and tell them to back it up.** Whoever
 holds this key controls the issuer's stake.
+
+Make the handover a real moment, not a footnote. Present the key on
+its own, labelled **Back up your wallet key**, with this in plain
+words: *"This key controls the share of your coin you kept. Phase
+can't recover it — if you lose it, that stake is locked forever.
+Save it somewhere safe (a password manager, or written down offline)
+before we mint."* Then get an explicit confirmation — an "I've saved
+it" tap or message — before you create the draft. Never proceed on
+silence, and never store the key yourself beyond the mint.
 
 ### 3. Create a draft
 
