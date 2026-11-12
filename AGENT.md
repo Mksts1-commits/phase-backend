@@ -360,6 +360,35 @@ Then point them onward:
 - Public coin directory: `GET /api/v1/marketplace/coins`
 - They can edit tagline, website, and social links later (owner-only).
 
+**Send the snapshot hyperlink.** The celebration lands even better as a
+link your user can tap, save, and share — a snapshot page that renders
+the coin card from the link itself, no account or API call needed:
+
+`https://mksts1-commits.github.io/phase-android/app/snapshot.html?<params>`
+
+Fill the parameters from the mint response and the draft you created
+(URL-encode every value):
+
+- `name`, `ticker` — the coin's name and ticker
+- `price`, `cap` (price × supply, a raw number), `supply` (a raw number)
+- `float` — public-float units available, or `keep` — what the issuer
+  retained, e.g. `95%`
+- `tagline` — the one-liner from the draft
+- `instagram`, `facebook`, `x`, `tiktok`, `youtube`, `website` — full
+  profile URLs for whichever the coin has
+- `rating`, `reviews` — the business's Google rating and review count,
+  when known
+- `cred`, `band` — the Phase Cred score and band, when the marketplace
+  listing shows them
+- `ghost`, `cash` — optional comma-separated price series (the listing's
+  `ghostSeries30d` / `priceHistory30d`) to draw the two-line chart
+- `mode=live` after a mint; `mode=sketch` for a pre-mint preview built
+  from proposed numbers
+
+Send it with the celebration — "Here's your coin:" plus the link. A
+business that has a PH1 preview coin can be sent the same link filled
+from that coin's marketplace listing.
+
 ## Browse the marketplace (no account needed)
 
 Anyone — including AI agents — can see what's listed without signing up:
@@ -529,8 +558,6 @@ How to use it:
   provenance records — are public: buyers can read and download them
   from the coin's **More info** view in the app and via
   `GET /api/v1/coins/:id/documents`. Never tell an issuer that their
-  ID or bank statement will be public, and never tell a buyer they
-  can see an issuer's verification documents.
 - **Links are verified live.** The reference URL, social profile,
   and logo points are earned only by links that actually work: the
   platform checks each URL once (when it's set, or on first scoring
