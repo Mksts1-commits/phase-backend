@@ -1,0 +1,15 @@
+# Example Render blueprint for the Creator Lookup service (free tier —
+# no disk, no store; the service reads public TikTok profile pages on
+# demand and caches briefly in memory).
+services:
+  - type: web
+    name: phase-creator-lookup
+    runtime: python
+    plan: free
+    rootDir: services/creator-lookup
+    buildCommand: ""
+    startCommand: python creator_lookup_service.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: 8091
