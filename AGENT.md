@@ -61,6 +61,35 @@ go straight to the form below.)
   gaps with your own quick web pass and leave anything you cannot verify
   blank.
 
+## Look the creator up first (TikTok)
+
+If the coin is for a TikTok creator — your user, or someone they name —
+and you have the handle, look it up **before** the intake form:
+
+```
+GET /api/v1/creators/lookup?username=<handle>
+```
+
+The handle works with or without the `@` (a full tiktok.com link works
+too). No account needed. The response carries:
+
+- **profile** — nickname, bio, verified flag, and live counts
+  (followers, following, hearts, videos). Show your user what you
+  found ("Found you — Phase Φ, 2 videos, bio: 'prompt your ai
+  agent…'") and let them confirm it's the right account.
+- **draftSeed** — pre-fill the intake from it: name = nickname,
+  suggested ticker from the handle, tagline = their bio, and the
+  profile URL as the reference URL + TikTok social (both earn Phase
+  Cred).
+- **snapshotLink** — the snapshot card built from the profile. Send
+  it in your first reply so they can see their coin before answering
+  anything.
+
+Anything the user edits wins over the lookup, always. A `404` just
+means the handle wasn't found — carry on with the plain form, never
+block on it. A `503` means creator lookup isn't configured on this
+deployment; skip it silently.
+
 ## Your first reply — one simple form, not an interrogation
 
 Most users arrive with nothing but "mint my coin" and this link. When
