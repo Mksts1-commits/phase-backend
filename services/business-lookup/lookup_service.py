@@ -51,6 +51,9 @@ ATTRIBUTION = "Business data © Overture Maps Foundation (CDLA Permissive 2.0)"
 OSM_ATTRIBUTION = "Business data © OpenStreetMap contributors (via Photon)"
 PHOTON_URL = "https://photon.komoot.io/api/"
 PHOTON_TIMEOUT = 6  # seconds; the fallback must stay inside the proxy budget
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 RATE_LIMIT_PER_MIN = 120
 CACHE_MAX = 512
 
@@ -298,11 +301,12 @@ def photon_search(name, city, region, country, limit):
     params = {"q": q, "limit": str(min(max(limit * 2, 5), 10)), "lang": "en"}
     req = urllib.request.Request(
         PHOTON_URL + "?" + urllib.parse.urlencode(params),
-        headers={"User-Agent": "phase-lookup/1.0"})
+        headers={"User-Agent": BROWSER_UA})
     try:
         with urllib.request.urlopen(req, timeout=PHOTON_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
-    except Exception:
+    except Exception as e:
+        print(f"photon lookup failed: {e}", flush=True)
         return [], True
     want_country = (country or "").upper()
     want_city = norm(city)
@@ -349,6 +353,78 @@ def photon_search(name, city, region, country, limit):
     return out[:limit], True
 
 
+def nominatim_search(name, city, region, country, limit):
+    """Second fallback: OSM's official Nominatim search (same contract
+    as photon_search). Some networks block one demo service or the
+    other; trying both keeps the global fallback alive. Light use only
+    — results are cached by the caller and rate-limited per IP."""
+    q = name + (f", {city}" if city else "") + (f", {region}" if region else "")
+    params = {"q": q, "format": "jsonv2", "addressdetails": "1",
+              "extratags": "1", "limit": str(min(max(limit * 2, 5), 10))}
+    if country:
+        params["countrycodes"] = country.lower()
+    req = urllib.request.Request(
+        NOMINATIM_URL + "?" + urllib.parse.urlencode(params),
+        headers={"User-Agent": "phase-lookup/1.0 (business lookup for Phase)"})
+    try:
+        with urllib.request.urlopen(req, timeout=PHOTON_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as e:
+        print(f"nominatim lookup failed: {e}", flush=True)
+        return [], True
+    want_city = norm(city)
+    out, in_city = [], []
+    for item in data or []:
+        addr = item.get("address") or {}
+        extra = item.get("extratags") or {}
+        disp = (item.get("display_name") or "").split(",")
+        bname = (disp[0] if disp else "").strip()
+        if not bname:
+            continue
+        street = " ".join(x for x in [addr.get("house_number"),
+                                      addr.get("road")] if x)
+        m = {
+            "sourceId": f"osm:{item.get('osm_type')}/{item.get('osm_id')}",
+            "name": bname,
+            "category": (item.get("type") or "").replace("_", " ") or None,
+            "address": street or None,
+            "locality": (addr.get("city") or addr.get("town")
+                         or addr.get("village") or addr.get("suburb")),
+            "region": addr.get("state"),
+            "postcode": addr.get("postcode"),
+            "country": (addr.get("country_code") or "").upper() or None,
+            "phone": extra.get("phone") or extra.get("contact:phone"),
+            "website": extra.get("website") or extra.get("contact:website"),
+            "email": None,
+            "socials": {},
+            "brand": None,
+            "confidence": 0.6,
+            "lat": float(item["lat"]) if item.get("lat") else None,
+            "lon": float(item["lon"]) if item.get("lon") else None,
+            "matchedVia": "nominatim",
+            "verify": False,
+        }
+        out.append(m)
+        if want_city and norm(m.get("locality")) == want_city:
+            in_city.append(m)
+    if want_city:
+        if in_city:
+            return in_city[:limit], True
+        for m in out:
+            m["verify"] = True
+            m["confidence"] = 0.4
+        return out[:limit], False
+    return out[:limit], True
+
+
+def fallback_search(name, city, region, country, limit):
+    """Global fallback chain: Photon first, Nominatim second."""
+    matches, seedable = photon_search(name, city, region, country, limit)
+    if matches:
+        return matches, seedable
+    return nominatim_search(name, city, region, country, limit)
+
+
 def lookup(name, city, region, country, limit):
     key = (norm(name), norm(city), (region or "").upper(),
            (country or "").upper(), limit)
@@ -360,9 +436,9 @@ def lookup(name, city, region, country, limit):
     source = "overture"
     seedable = True
     if not matches:
-        matches, seedable = photon_search(name, city, region, country, limit)
+        matches, seedable = fallback_search(name, city, region, country, limit)
         if matches:
-            source = "photon"
+            source = matches[0].get("matchedVia") or "photon"
     result = {
         "query": {"q": name, "city": city, "region": region,
                   "country": country},
