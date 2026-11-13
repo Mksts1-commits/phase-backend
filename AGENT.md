@@ -30,6 +30,64 @@ flow, your user owns a live chain and a minted coin supply on it.
 4. **Legal name + explicit acceptance** — see step 4. This is a real legal
    agreement. Never skip showing it to your user.
 
+## Start from the snapshot — the profile is already made
+
+Phase works **snapshot-first**. Every person, business and asset that
+already exists already has a profile: a snapshot of their coin, premade
+from public data. Your user never authors a profile from scratch —
+they **review the snapshot, edit what they want, consent, sign, and
+mint**. Authoring is reserved for one case only: a **very fresh idea**,
+something that does not exist yet anywhere.
+
+A snapshot needs exactly **one identifier** to appear. Any one of
+these is enough:
+
+- a **business name** (a city makes it exact) → business lookup
+- a **social handle** on TikTok, YouTube or X → creator lookup
+- a **property address** → real-estate lookup
+- a **coin, ticker or link they arrived from** — an outreach email, a
+  marketplace coin, a snapshot link: the snapshot is already in it
+
+**Use an identifier you already have before asking for one.** Check
+the user's message, the link that brought them here, their profile or
+bio, names mentioned earlier in the conversation. Most "mint my coin"
+requests carry an identifier implicitly — their own business, their
+own handle. Only ask when no identifier exists anywhere, and then ask
+for just that one thing.
+
+Then:
+
+1. Run the matching lookup (next three sections) and lead with the
+   `snapshotLink` — their coin, before they've answered anything.
+2. They edit: name, ticker, numbers, story. Their edits always win.
+3. Consent + sign (step 4) and mint (step 5) — the flow below.
+
+
+**Every snapshot carries a predicted market cap** — an educated guess,
+computed from whatever signal exists, always presented to the user as
+a prediction they can edit, never as a valuation:
+
+- **Business** — if the owner shares annual profit, profit × 20. If
+  not, research a profit estimate yourself (size, locations, category,
+  review volume) and use estimate × 20. No signal at all → the Phase
+  standard $100K.
+- **Creator** — audience × $10, $100K floor, $50M ceiling (the lookups
+  compute this for you in `economics`).
+- **Property** — the owner's value estimate, or your researched
+  assessment/comparable estimate. No value signal → $100K standard.
+- **Fresh idea / person** — the Phase standard $100K is the starting
+  prediction until the idea earns its own signals.
+
+Price stays $0.50 and supply = cap × 2 unless the user changes them.
+A snapshot without numbers is incomplete — if you compose one
+yourself (the step-6 hyperlink), always include `price`, `cap` and
+`supply` from the prediction.
+
+If **no identifier can be found and the idea itself is new**, the
+snapshot doesn't exist yet — that's the guided path: the intake form
+further down creates the first version of it from their answers. It is
+the exception, not the front door.
+
 ## Look the business up first
 
 If your user has named a business — theirs, or the one the coin is for —
@@ -142,10 +200,14 @@ OpenStreetMap into a normalized property record:
 
 ## Your first reply — one simple form, not an interrogation
 
-Most users arrive with nothing but "mint my coin" and this link. When
-that happens, **your first message is a single short intake form** — do
-not explain the platform first, do not ask questions one at a time, and
-do not start API calls yet. Send this (adapt the wording to your voice,
+This form is the **fresh-idea path**: a coin whose subject does not
+exist yet, or a request where no identifier produced a snapshot. If a
+lookup already gave you a snapshot, skip this form entirely — the
+user is editing a premade profile, not applying for one.
+
+When the form is the right path, **your first message is a single
+short intake form** — do not explain the platform first, do not ask
+questions one at a time, and do not start API calls yet. Send this (adapt the wording to your voice,
 but keep every field and keep it this short):
 
 > Let's mint your coin — I just need the basics:
@@ -529,6 +591,11 @@ Fill the parameters from the mint response and the draft you created
   `ghostSeries30d` / `priceHistory30d`) to draw the two-line chart
 - `mode=live` after a mint; `mode=sketch` for a pre-mint preview built
   from proposed numbers
+
+For a pre-mint (`mode=sketch`) snapshot you compose yourself, the
+`cap` you include is the **predicted market cap** from the educated
+guess for that path (see "Start from the snapshot") — never leave the
+numbers out, and never present the prediction as a valuation.
 
 Send it with the celebration — "Here's your coin:" plus the link. A
 business that has a PH1 preview coin can be sent the same link filled
