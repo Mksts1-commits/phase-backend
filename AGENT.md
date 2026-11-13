@@ -62,6 +62,27 @@ Then:
 2. They edit: name, ticker, numbers, story. Their edits always win.
 3. Consent + sign (step 4) and mint (step 5) — the flow below.
 
+
+**Every snapshot carries a predicted market cap** — an educated guess,
+computed from whatever signal exists, always presented to the user as
+a prediction they can edit, never as a valuation:
+
+- **Business** — if the owner shares annual profit, profit × 20. If
+  not, research a profit estimate yourself (size, locations, category,
+  review volume) and use estimate × 20. No signal at all → the Phase
+  standard $100K.
+- **Creator** — audience × $10, $100K floor, $50M ceiling (the lookups
+  compute this for you in `economics`).
+- **Property** — the owner's value estimate, or your researched
+  assessment/comparable estimate. No value signal → $100K standard.
+- **Fresh idea / person** — the Phase standard $100K is the starting
+  prediction until the idea earns its own signals.
+
+Price stays $0.50 and supply = cap × 2 unless the user changes them.
+A snapshot without numbers is incomplete — if you compose one
+yourself (the step-6 hyperlink), always include `price`, `cap` and
+`supply` from the prediction.
+
 If **no identifier can be found and the idea itself is new**, the
 snapshot doesn't exist yet — that's the guided path: the intake form
 further down creates the first version of it from their answers. It is
@@ -570,6 +591,11 @@ Fill the parameters from the mint response and the draft you created
   `ghostSeries30d` / `priceHistory30d`) to draw the two-line chart
 - `mode=live` after a mint; `mode=sketch` for a pre-mint preview built
   from proposed numbers
+
+For a pre-mint (`mode=sketch`) snapshot you compose yourself, the
+`cap` you include is the **predicted market cap** from the educated
+guess for that path (see "Start from the snapshot") — never leave the
+numbers out, and never present the prediction as a valuation.
 
 Send it with the celebration — "Here's your coin:" plus the link. A
 business that has a PH1 preview coin can be sent the same link filled
